@@ -2,8 +2,10 @@ package storage_test
 
 import (
 	"bytes"
+	"io"
 	"log"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/brinestone/dfs/storage"
@@ -11,23 +13,52 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var logger = log.New(os.Stdout, "store_test\t", log.LstdFlags)
-var storeConfig = storage.StoreConfig{
-	KeyTransformer: storage.NoopKeyTransformer,
-	Logger:         logger,
+func storeCleanup(root string) {
+	_ = os.RemoveAll(root)
 }
 
-func TestNewStore(t *testing.T) {
+var logger = log.New(os.Stdout, "[store_test]\t", log.LstdFlags)
+var storeConfig = storage.StoreConfig{
+	TransformKey: storage.NoopKeyTransformer,
+	Logger:       logger,
+}
+
+func Test_CASKeyTransformer(t *testing.T) {
+	storeConfig.Root = t.TempDir()
+	key := "randomkey"
+	expectedTransform := "5a8e9/d7284/cd1a2/58466/06e62/c44ce/e4980/2c4fd"
+	pathKey := storage.CASKeyTransformer(storeConfig.Root, key)
+	assert.Equal(t, expectedTransform, pathKey.Pathname)
+}
+
+func Test_NewStore(t *testing.T) {
 	store := storage.NewStore(storeConfig)
 	assert.NotNil(t, store)
+	t.Run("No_Transformer", func(t1 *testing.T) {
+		conf := storeConfig
+		conf.TransformKey = nil
+		store := storage.NewStore(conf)
+		assert.NotNil(t1, store)
+	})
+
+	t.Run("No_Root", func(t1 *testing.T) {
+		conf := storeConfig
+		conf.Root = ""
+		store := storage.NewStore(conf)
+		assert.NotNil(t1, store)
+	})
 }
 
-func TestWrite(t *testing.T) {
-
-	store := storage.NewStore(storeConfig)
-
+func TestStore_Write(t *testing.T) {
+	storeConfig.Root = t.TempDir()
+	// storeConfig.KeyTransformer = storage.CASKeyTransformer
 	datakey := "somekey"
-	defer os.RemoveAll(datakey)
+	store := storage.NewStore(storeConfig)
+	pathkey := storeConfig.TransformKey(storeConfig.Root, datakey)
+
+	t.Cleanup(func() {
+		storeCleanup(pathkey.Root)
+	})
 
 	data := bytes.NewReader([]byte("some random data"))
 
@@ -36,9 +67,85 @@ func TestWrite(t *testing.T) {
 	}
 }
 
-func TestCASKeyTransformer(t *testing.T) {
-	key := "randomkey"
-	expectedTransform := "5a8e9/d7284/cd1a2/58466/06e62/c44ce/e4980/2c4fd"
-	pathname := storage.CASKeyTransformer(key)
-	assert.Equal(t, expectedTransform, pathname)
+func TestStore_Read(t *testing.T) {
+	storeConfig.Root = t.TempDir()
+	//	storeConfig.KeyTransformer = storage.CASKeyTransformer
+	store := storage.NewStore(storeConfig)
+	data := []byte("some really random bytes")
+	dataSource := bytes.NewReader(data)
+	key := "some really good key"
+	pathkey := storeConfig.TransformKey(storeConfig.Root, key)
+	t.Cleanup(func() {
+		storeCleanup(pathkey.Root)
+	})
+
+	if err := store.Write(key, dataSource); err != nil {
+		t.Error(err)
+	}
+
+	r, err := store.Read(key)
+	if err != nil {
+		t.Error(err)
+	}
+
+	readData, err := io.ReadAll(r)
+	if err != nil {
+		t.Error(err)
+	}
+
+	assert.EqualValues(t, data, readData)
+}
+
+func TestStore_Delete(t *testing.T) {
+	storeConfig.Root = t.TempDir()
+	key := "somereallyrandomkey"
+	store := storage.NewStore(storeConfig)
+	data := []byte("some really important data that needs to be protected at all costs")
+	pathKey := store.TransformKey(storeConfig.Root, key)
+	t.Cleanup(func() {
+		storeCleanup(pathKey.Root)
+	})
+
+	dataSource := bytes.NewReader(data)
+	if err := store.Write(key, dataSource); err != nil {
+		t.Error(err)
+	}
+
+	if err := store.Delete(key); err != nil {
+		t.Error(err)
+	}
+
+	_, err := os.Open(pathKey.FilePath())
+	if err != nil {
+		if !strings.HasSuffix(err.Error(), "no such file or directory") {
+			t.Error(err)
+		}
+	}
+}
+
+func TestStore_Has_when_file_exists(t *testing.T) {
+	storeConfig.Root = t.TempDir()
+	key := "some really good key"
+	data := []byte("some really good amount of bytes")
+	store := storage.NewStore(storeConfig)
+	pk := storeConfig.TransformKey(storeConfig.Root, key)
+	t.Cleanup(func() {
+		storeCleanup(pk.Root)
+	})
+
+	if err := store.Write(key, bytes.NewReader(data)); err != nil {
+		t.Error(err)
+	}
+
+	assert.True(t, store.Has(key))
+}
+
+func TestStore_Has_when_file_not_exists(t *testing.T) {
+	key := "some really good key"
+	// data := []byte("some really good amount of bytes")
+	store := storage.NewStore(storeConfig)
+	// pk := storeConfig.TransformKey(key)
+
+	assert.False(t, store.Has(key))
+
 }
