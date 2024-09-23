@@ -13,6 +13,8 @@ import (
 	"strings"
 )
 
+var defaultLogger *log.Logger = log.New(log.Writer(), "[STORE]\t", log.LstdFlags)
+
 type PathKey struct {
 	Pathname string
 	Root     string
@@ -82,9 +84,17 @@ func NewStore(config StoreConfig) *Store {
 		config.Root = homeDir
 	}
 
+	if config.Logger == nil {
+		config.Logger = defaultLogger
+	}
+
 	return &Store{
 		StoreConfig: config,
 	}
+}
+
+func (s *Store) Clean() error {
+	return os.RemoveAll(s.Root)
 }
 
 func (s *Store) Has(key string) bool {

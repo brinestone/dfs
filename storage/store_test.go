@@ -2,9 +2,13 @@ package storage_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -147,5 +151,30 @@ func TestStore_Has_when_file_not_exists(t *testing.T) {
 	// pk := storeConfig.TransformKey(key)
 
 	assert.False(t, store.Has(key))
+}
 
+func TestStore_Clean(t *testing.T) {
+	key := "some really good key"
+	data := []byte("Really good data")
+	storeConfig.Root = path.Join(t.TempDir(), "drop")
+	store := storage.NewStore(storeConfig)
+
+	if err := store.Write(key, bytes.NewReader(data)); err != nil {
+		t.Error(err)
+	}
+
+	if err := store.Clean(); err != nil {
+		t.Error(err)
+	}
+
+	dirEmpty := true
+	err := filepath.WalkDir(store.Root, func(path string, d fs.DirEntry, err error) error {
+		dirEmpty = d == nil
+		return err
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Error(err)
+	}
+
+	assert.True(t, dirEmpty)
 }

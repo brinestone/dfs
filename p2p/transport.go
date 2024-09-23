@@ -12,7 +12,9 @@ type Peer interface {
 
 type Transport interface {
 	ListenAndAccept() error
+	Dial(string) error
 	Consume() <-chan Rpc
+	Close() error
 }
 
 type HandshakeFunc func(Peer) error
