@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,17 +21,17 @@ func storeCleanup(root string) {
 	_ = os.RemoveAll(root)
 }
 
-var logger = log.New(os.Stdout, "[store_test]\t", log.LstdFlags)
+var logger = slog.Default().WithGroup("[store_test]")
 var storeConfig = storage.StoreConfig{
-	TransformKey: storage.NoopKeyTransformer,
-	Logger:       logger,
+	Logger: logger,
 }
 
 func Test_CASKeyTransformer(t *testing.T) {
 	storeConfig.Root = t.TempDir()
 	key := "randomkey"
-	expectedTransform := "5a8e9/d7284/cd1a2/58466/06e62/c44ce/e4980/2c4fd"
-	pathKey := storage.CASKeyTransformer(storeConfig.Root, key)
+	expectedTransform := path.Join(storeConfig.Root, "5a8e9/d7284/cd1a2/58466/06e62/c44ce/e4980/2c4fd")
+	transformFunc := storage.CASKeyTransformer(storeConfig.Root)
+	pathKey := transformFunc(key)
 	assert.Equal(t, expectedTransform, pathKey.Pathname)
 }
 
@@ -55,10 +55,10 @@ func Test_NewStore(t *testing.T) {
 
 func TestStore_Write(t *testing.T) {
 	storeConfig.Root = t.TempDir()
-	// storeConfig.KeyTransformer = storage.CASKeyTransformer
+	storeConfig.TransformKey = storage.CASKeyTransformer(storeConfig.Root)
 	datakey := "somekey"
 	store := storage.NewStore(storeConfig)
-	pathkey := storeConfig.TransformKey(storeConfig.Root, datakey)
+	pathkey := storeConfig.TransformKey(datakey)
 
 	t.Cleanup(func() {
 		storeCleanup(pathkey.Root)
@@ -73,12 +73,12 @@ func TestStore_Write(t *testing.T) {
 
 func TestStore_Read(t *testing.T) {
 	storeConfig.Root = t.TempDir()
-	//	storeConfig.KeyTransformer = storage.CASKeyTransformer
+	storeConfig.TransformKey = storage.CASKeyTransformer(storeConfig.Root)
 	store := storage.NewStore(storeConfig)
 	data := []byte("some really random bytes")
 	dataSource := bytes.NewReader(data)
 	key := "some really good key"
-	pathkey := storeConfig.TransformKey(storeConfig.Root, key)
+	pathkey := storeConfig.TransformKey(key)
 	t.Cleanup(func() {
 		storeCleanup(pathkey.Root)
 	})
@@ -105,7 +105,7 @@ func TestStore_Delete(t *testing.T) {
 	key := "somereallyrandomkey"
 	store := storage.NewStore(storeConfig)
 	data := []byte("some really important data that needs to be protected at all costs")
-	pathKey := store.TransformKey(storeConfig.Root, key)
+	pathKey := store.TransformKey(key)
 	t.Cleanup(func() {
 		storeCleanup(pathKey.Root)
 	})
@@ -132,7 +132,7 @@ func TestStore_Has_when_file_exists(t *testing.T) {
 	key := "some really good key"
 	data := []byte("some really good amount of bytes")
 	store := storage.NewStore(storeConfig)
-	pk := storeConfig.TransformKey(storeConfig.Root, key)
+	pk := storeConfig.TransformKey(key)
 	t.Cleanup(func() {
 		storeCleanup(pk.Root)
 	})

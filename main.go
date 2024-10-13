@@ -1,28 +1,33 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
+	"crypto/md5"
+	"encoding/gob"
+	"encoding/hex"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
+	"math"
+	"math/rand"
+	"net"
 	"os"
 	"path"
-	"strings"
+	"time"
 
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/server"
 	"github.com/brinestone/dfs/storage"
 )
 
-var logger = log.Default()
-var listenPort = flag.Int("p", 3000, "Port to listen on")
-var storageRoot = flag.String("sr", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem root to use")
-var nodesStr = flag.String("n", "", "Peer servers: [node1,node2,node3]")
-var ctx = context.Background()
+var serverCount = flag.Int("cnt", 2, "Number of servers to spawn")
 
-func makeServer() *server.FileServer {
-	listenAddr := fmt.Sprintf(":%d", *listenPort)
+var logger = slog.Default().WithGroup("DFS")
+
+var storageRoot = flag.String("root", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem path to be used as root.")
+
+func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
 	tcpTransportConfig := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
 		Handshaker: p2p.NoopHandshaker,
@@ -31,28 +36,68 @@ func makeServer() *server.FileServer {
 		// TODO: onPeer func
 	}
 	tcpTransport := p2p.NewTcpTransport(tcpTransportConfig)
+	serverGroup := fmt.Sprintf("server-%s", id)
+	hash := md5.Sum([]byte(serverGroup))
+	root := path.Join(*storageRoot, hex.EncodeToString(hash[:]))
+
+	c, cancel := context.WithCancel(ctx)
 
 	serverConfig := server.FileServerConfig{
-		ListenAddr:   listenAddr,
-		StorageRoot:  path.Join(*storageRoot, base64.StdEncoding.EncodeToString([]byte(listenAddr))),
-		TransformKey: storage.CASKeyTransformer,
-		Transport:    tcpTransport,
-		Context:      ctx,
-		Nodes:        strings.Split(*nodesStr, ","),
-		Logger:       logger,
+		ListenAddr:     listenAddr,
+		StorageRoot:    root,
+		KeyTransformer: storage.CASKeyTransformer(root),
+		Transport:      tcpTransport,
+		Id:             id,
+		Context:        c,
+		Logger:         logger.WithGroup(serverGroup),
 	}
 
 	s := server.NewFileServer(serverConfig)
-	return s
+	return s, cancel
+}
+
+func spawnServers(ctx context.Context, cb func(*server.FileServer)) {
+	logger.Debug("Spawning servers", "server-count", *serverCount)
+	var addrs = make([]string, *serverCount)
+	var c int
+
+	// Find available port
+	for c < *serverCount {
+		t := int(math.Max(1025, float64(rand.Intn(65_536))))
+
+		addr := fmt.Sprintf("0.0.0.0:%d", t)
+		if l, err := net.Listen("tcp", addr); err == nil {
+			addrs[c] = addr
+			l.Close()
+			c++
+			continue
+		}
+	}
+
+	for i, addr := range addrs {
+		s, cancel := makeServer(ctx, addr, fmt.Sprintf("%d", i+1))
+		peers := addrs[:i]
+		go func() {
+			defer cancel()
+			if err := s.Start(peers...); err != nil {
+				logger.Error(err.Error())
+			}
+		}()
+		go cb(s)
+	}
+
 }
 
 func main() {
+	gob.Register(server.Message{Payload: []byte{}})
 	flag.Parse()
-	logger.SetPrefix("[DFS]\t")
-	s := makeServer()
+	ctx := context.Background()
 
-	if err := s.Start(); err != nil {
-		logger.Fatal(err)
-	}
+	spawnServers(ctx, func(fs *server.FileServer) {
+		time.Sleep(time.Second * 3)
+		data := bytes.NewReader([]byte(fmt.Sprintf("some random bytes for server: %s\n", fs.Id)))
+		fs.StoreData(fmt.Sprintf("%s--%s", fs.Id, time.Now().String()), data)
+	})
 
+	select {}
 }

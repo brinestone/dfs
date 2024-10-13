@@ -2,9 +2,9 @@ package p2p_test
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
+	"math"
 	"math/rand"
-	"os"
 	"testing"
 
 	"github.com/brinestone/dfs/p2p"
@@ -12,17 +12,16 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var logger = log.New(os.Stdout, "[tcp_transport_test]\t", log.LstdFlags)
+var logger = slog.Default().WithGroup("[store_test]")
 
 func TestNewTcpTransport(t *testing.T) {
-	portNumber := rand.Int31n(64_512) + 1025
+	portNumber := int(math.Max(1025, float64(rand.Int31n(64_512))))
 	listenAddr := fmt.Sprintf(":%d", portNumber)
 	config := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
 		Logger:     logger,
 		Handshaker: p2p.NoopHandshaker,
 		Decoder:    p2p.DefaultDecoder{},
-		OnPeer:     p2p.NoopHandshaker,
 	}
 
 	tr := p2p.NewTcpTransport(config)

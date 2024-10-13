@@ -2,25 +2,32 @@ package p2p
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 )
 
 // TcpPeer represents a remote host on the network
 type TcpPeer struct {
 	// The underlying connection to the peer host
-	conn net.Conn
+	net.Conn
 	// true if the connection was dialed and false if otherwise
 	outbound bool
 }
 
-func (t *TcpPeer) Close() error {
-	return t.conn.Close()
+func (t *TcpPeer) Inbound() bool {
+	return !t.outbound
+}
+
+func (t *TcpPeer) Send(data []byte) error {
+	if _, err := t.Write(data); err != nil {
+		return err
+	}
+	return nil
 }
 
 func newTcpPeer(conn net.Conn, outbound bool) *TcpPeer {
 	return &TcpPeer{
-		conn:     conn,
+		Conn:     conn,
 		outbound: outbound,
 	}
 }
@@ -28,25 +35,44 @@ func newTcpPeer(conn net.Conn, outbound bool) *TcpPeer {
 type TcpTransportConfig struct {
 	ListenAddr string
 	Handshaker HandshakeFunc
-	Logger     *log.Logger
+	Logger     *slog.Logger
 	Decoder    Decoder
-	OnPeer     func(Peer) error
 }
 
 type TcpTransport struct {
 	TcpTransportConfig
-	listener net.Listener
-	rpcch    chan Rpc
+	listener            net.Listener
+	rpcch               chan Rpc
+	connectCallbacks    []func(Peer)
+	disconnectCallbacks []func(Peer)
+}
+
+func (t *TcpTransport) OnPeerConnected(f func(Peer)) {
+	t.connectCallbacks = append(t.connectCallbacks, f)
+}
+
+func (t *TcpTransport) OnPeerDisconnected(f func(Peer)) {
+	t.disconnectCallbacks = append(t.disconnectCallbacks, f)
 }
 
 func (t *TcpTransport) Dial(addr string) error {
-	t.Logger.Printf("attempting to dial %s\n", addr)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return err
 	}
 
 	peer := newTcpPeer(conn, true)
+	if err := t.Handshaker(peer); err != nil {
+		defer peer.Close()
+		return err
+	}
+
+	if len(t.connectCallbacks) > 0 {
+		for _, callback := range t.connectCallbacks {
+			callback(peer)
+		}
+	}
+
 	go t.startPeerReadLoop(peer)
 
 	return nil
@@ -63,8 +89,6 @@ func (t *TcpTransport) ListenAndAccept() error {
 	if err != nil {
 		return err
 	}
-
-	// t.Logger.Printf("tcp-transport::listen -> \"%s\"👂\n", strings.Trim(t.ListenAddr, "\n"))
 	go t.startAcceptLoop()
 
 	return err
@@ -76,7 +100,6 @@ func (t *TcpTransport) Close() error {
 }
 
 func NewTcpTransport(config TcpTransportConfig) *TcpTransport {
-	// defer config.Logger.Println("tcp-transport::new\t✅")
 	return &TcpTransport{
 		TcpTransportConfig: config,
 		rpcch:              make(chan Rpc),
@@ -90,20 +113,19 @@ func (t *TcpTransport) startAcceptLoop() {
 			if errors.Is(err, net.ErrClosed) {
 				break
 			}
-			t.Logger.Printf("tcp accept error: %v\n", err)
+			t.Logger.Error(err.Error())
 		}
 		peer := newTcpPeer(conn, false)
-		t.Logger.Printf("new incoming peer connection: %+v\n", peer.conn.RemoteAddr().String())
 
-		if err := t.TcpTransportConfig.Handshaker(peer); err != nil {
-			t.Logger.Println(err)
+		if err := t.Handshaker(peer); err != nil {
+			t.Logger.Error(err.Error())
 			_ = peer.Close()
 			continue
 		}
 
-		if t.TcpTransportConfig.OnPeer != nil {
-			if err := t.OnPeer(peer); err != nil {
-				t.Logger.Fatalf("onpeer failed: \"%v\"\n", err)
+		if len(t.connectCallbacks) > 0 {
+			for _, f := range t.connectCallbacks {
+				go f(peer)
 			}
 		}
 		go t.startPeerReadLoop(peer)
@@ -112,18 +134,23 @@ func (t *TcpTransport) startAcceptLoop() {
 
 func (t *TcpTransport) startPeerReadLoop(peer *TcpPeer) {
 	defer func() {
-		t.Logger.Printf("peer dropped: %s", peer.conn.RemoteAddr().String())
+		if len(t.disconnectCallbacks) > 0 {
+			for _, f := range t.disconnectCallbacks {
+				go f(peer)
+			}
+		}
 	}()
+
 	rpc := Rpc{}
 	for {
-		if err := t.TcpTransportConfig.Decoder.Decode(peer.conn, &rpc); err != nil {
+		if err := t.Decoder.Decode(peer, &rpc); err != nil {
 			if errors.Is(err, net.ErrClosed) || err.Error() == "EOF" {
 				break
 			}
-			t.Logger.Println(err)
+			t.Logger.Error(err.Error())
 			continue
 		}
-		rpc.From = peer.conn.RemoteAddr().String()
+		rpc.From = peer.RemoteAddr().String()
 		t.rpcch <- rpc
 	}
 }

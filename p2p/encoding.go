@@ -1,6 +1,8 @@
 package p2p
 
-import "io"
+import (
+	"io"
+)
 
 type Decoder interface {
 	Decode(io.Reader, *Rpc) error
@@ -8,7 +10,7 @@ type Decoder interface {
 
 type DefaultDecoder struct{}
 
-const incomingStream = 0x2
+const incomingStream byte = 0x2
 
 func (dec DefaultDecoder) Decode(r io.Reader, msg *Rpc) error {
 	peekBuff := make([]byte, 1)
@@ -17,17 +19,23 @@ func (dec DefaultDecoder) Decode(r io.Reader, msg *Rpc) error {
 	}
 
 	stream := peekBuff[0] == incomingStream
+	msg.Stream = stream
 	if stream {
-		msg.Stream = true
 		return nil
 	}
 
 	buff := make([]byte, 1028)
+
 	n, err := r.Read(buff)
 	if err != nil {
 		return err
 	}
-	msg.Payload = buff[:n]
+	msg.Payload = make([]byte, 1+n)
+	msg.Payload[0] = peekBuff[0]
+
+	for i, b := range buff[:n] {
+		msg.Payload[i+1] = b
+	}
 
 	return nil
 }

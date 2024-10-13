@@ -7,13 +7,11 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path"
 	"strings"
 )
-
-var defaultLogger *log.Logger = log.New(log.Writer(), "[STORE]\t", log.LstdFlags)
 
 type PathKey struct {
 	Pathname string
@@ -22,47 +20,50 @@ type PathKey struct {
 }
 
 func (p PathKey) FilePath() string {
-	return path.Join(p.Root, p.Pathname, p.Filename)
+	return path.Join(p.Pathname, p.Filename)
 }
 
-func (p PathKey) FullPath() string {
-	return path.Join(p.Root, p.Pathname)
-}
+type KeyTransformer func(string) PathKey
 
-type KeyTransformer func(string, string) PathKey
-
-func NoopKeyTransformer(root string, k string) PathKey {
-	return PathKey{
-		Pathname: k,
-		Root:     root,
-		Filename: strings.ReplaceAll(k, " \t\n", "_"),
+func NoopKeyTransformer(root string) KeyTransformer {
+	return func(k string) PathKey {
+		return PathKey{
+			Pathname: k,
+			Root:     root,
+			Filename: strings.ReplaceAll(k, " \t", "_"),
+		}
 	}
 }
 
-func CASKeyTransformer(root, k string) PathKey {
-	digest := sha1.Sum([]byte(k))
-	digestStr := hex.EncodeToString(digest[:])
+func CASKeyTransformer(root string) KeyTransformer {
+	return func(k string) PathKey {
+		digest := sha1.Sum([]byte(k))
+		digestStr := hex.EncodeToString(digest[:])
 
-	blockSize := 5
-	sliceLen := len(digestStr) / blockSize
+		blockSize := 5
+		sliceLen := len(digestStr) / blockSize
 
-	segments := make([]string, sliceLen)
+		segments := make([]string, sliceLen)
 
-	for i := 0; i < sliceLen; i++ {
-		from, to := i*blockSize, (i*blockSize)+blockSize
-		segments[i] = digestStr[from:to]
-	}
+		for i := 0; i < sliceLen; i++ {
+			from, to := i*blockSize, (i*blockSize)+blockSize
+			segments[i] = digestStr[from:to]
+		}
 
-	return PathKey{
-		Filename: digestStr,
-		Pathname: path.Join(segments...),
-		Root:     root,
+		pathName := []string{root}
+		pathName = append(pathName, segments...)
+
+		return PathKey{
+			Filename: digestStr,
+			Pathname: path.Join(pathName...),
+			Root:     path.Join(root, segments[0]),
+		}
 	}
 }
 
 type StoreConfig struct {
 	TransformKey KeyTransformer
-	Logger       *log.Logger
+	Logger       *slog.Logger
 	// Root directory of the store
 	Root string
 }
@@ -73,7 +74,7 @@ type Store struct {
 
 func NewStore(config StoreConfig) *Store {
 	if config.TransformKey == nil {
-		config.TransformKey = NoopKeyTransformer
+		config.TransformKey = NoopKeyTransformer(config.Root)
 	}
 
 	if len(config.Root) == 0 {
@@ -82,10 +83,6 @@ func NewStore(config StoreConfig) *Store {
 			homeDir = ""
 		}
 		config.Root = homeDir
-	}
-
-	if config.Logger == nil {
-		config.Logger = defaultLogger
 	}
 
 	return &Store{
@@ -98,14 +95,14 @@ func (s *Store) Clean() error {
 }
 
 func (s *Store) Has(key string) bool {
-	pk := s.TransformKey(s.Root, key)
+	pk := s.TransformKey(key)
 	_, err := os.Stat(pk.FilePath())
 	return !errors.Is(err, fs.ErrNotExist)
 }
 
 func (s *Store) Delete(key string) error {
-	pathKey := s.TransformKey(s.Root, key)
-	return os.RemoveAll(pathKey.FilePath())
+	pathKey := s.TransformKey(key)
+	return os.RemoveAll(pathKey.Root)
 }
 
 func (s *Store) Write(key string, r io.Reader) error {
@@ -130,17 +127,16 @@ func (s *Store) Read(key string) (io.Reader, error) {
 }
 
 func (s *Store) readStream(key string) (io.ReadCloser, error) {
-	pathKey := s.TransformKey(s.Root, key)
+	pathKey := s.TransformKey(key)
 	filePath := pathKey.FilePath()
 
 	return os.Open(filePath)
 }
 
 func (s *Store) writeStream(key string, r io.Reader) error {
-	pathKey := s.TransformKey(s.Root, key)
+	pathKey := s.TransformKey(key)
 
-	fullPath := pathKey.FullPath()
-	if err := os.MkdirAll(fullPath, os.ModePerm); err != nil {
+	if err := os.MkdirAll(pathKey.Pathname, os.ModePerm); err != nil {
 		return err
 	}
 
@@ -161,7 +157,7 @@ func (s *Store) writeStream(key string, r io.Reader) error {
 		return err
 	}
 
-	s.Logger.Printf("written [%d] bytes to storage", n)
+	s.Logger.Info("data written", "byteCount", n)
 
 	return nil
 }
