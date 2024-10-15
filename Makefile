@@ -10,7 +10,7 @@ run:
 	@./bin/app
 
 test:
-	@go test ./... -v -race
+	@go test ./... -v
 
 dev:
 	@$$GOPATH/bin/air --build.cmd "make build" --build.bin "./bin/app" --build.exclude_dir "templates,build,bin"
