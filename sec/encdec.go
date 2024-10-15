@@ -28,7 +28,11 @@ func NewKeyPair() (*KeyPair, error) {
 	})
 
 	pbk := &pvk.PublicKey
-	pkB := x509.MarshalPKCS1PublicKey(pbk)
+	pkB, err := x509.MarshalPKIXPublicKey(pbk)
+	if err != nil {
+		return nil, err
+	}
+
 	pkPem := pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PUBLIC KEY",
 		Bytes: pkB,
