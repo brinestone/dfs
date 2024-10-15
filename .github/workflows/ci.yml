@@ -1,5 +1,8 @@
 name: DFS CI
 
+on:
+  push:
+
 jobs:
   test:
     runs-on: ubuntu-latest
