@@ -105,8 +105,8 @@ func (s *Store) Delete(key string) error {
 	return os.RemoveAll(pathKey.Root)
 }
 
-func (s *Store) Write(key string, r io.Reader) error {
-	return s.writeStream(key, r)
+func (s *Store) Write(offset int64, key string, r io.Reader) (int64, error) {
+	return s.writeStream(offset, key, r)
 }
 
 func (s *Store) Read(key string) (io.Reader, error) {
@@ -133,31 +133,47 @@ func (s *Store) readStream(key string) (io.ReadCloser, error) {
 	return os.Open(filePath)
 }
 
-func (s *Store) writeStream(key string, r io.Reader) error {
+func (s *Store) writeStream(offset int64, key string, r io.Reader) (int64, error) {
 	pathKey := s.TransformKey(key)
 
 	if err := os.MkdirAll(pathKey.Pathname, os.ModePerm); err != nil {
-		return err
+		return 0, err
 	}
 
 	buf := new(bytes.Buffer)
 	if _, err := io.Copy(buf, r); err != nil {
-		return err
+		return 0, err
 	}
 
 	filePath := pathKey.FilePath()
 
-	handle, err := os.Create(filePath)
-	if err != nil {
-		return err
+	var handle *os.File
+	if offset == 0 {
+		var err error
+		handle, err = os.Create(filePath)
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		var err error
+		handle, err = os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, os.ModePerm)
+		if err != nil {
+			return 0, err
+		}
+		pos, err := handle.Seek(offset, io.SeekCurrent)
+		if err != nil {
+			return 0, err
+		}
+		if pos != offset {
+			return 0, errors.New("data corrupt")
+		}
 	}
+	defer handle.Close()
 
 	n, err := io.Copy(handle, buf)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	s.Logger.Info("data written", "byteCount", n)
-
-	return nil
+	return n, nil
 }

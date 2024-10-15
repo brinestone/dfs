@@ -4,22 +4,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/storage"
 )
 
 type FileServerConfig struct {
-	ListenAddr     string
-	KeyTransformer storage.KeyTransformer
-	StorageRoot    string
-	Transport      p2p.Transport
-	Context        context.Context
-	Logger         *slog.Logger
-	Id             string
+	ListenAddr      string
+	KeyTransformer  storage.KeyTransformer
+	StorageRoot     string
+	Transport       p2p.Transport
+	Context         context.Context
+	Logger          *slog.Logger
+	Id              string
+	StreamChunkSize int64
 }
 
 type FileServer struct {
@@ -32,52 +35,56 @@ type FileServer struct {
 	ctx          context.Context
 }
 
-type BaseCommand struct {
+type ReadCommand struct {
 	Key string
 }
 
-type ReadCommand struct {
-	BaseCommand
-}
-
 type StoreCommand struct {
-	BaseCommand
-	Data []byte
+	Offset   int64
+	Total    int64
+	Key      string
+	Data     []byte
+	Checksum string
 }
 
 type Message struct {
-	Payload interface{}
+	Timestamp time.Time
+	Payload   interface{}
 }
 
-func (fs *FileServer) StoreData(key string, r io.Reader) error {
-	msg := Message{
-		Payload: "storage bytes",
+// Writes the data to the disk and also broadcasts it to other nodes and returns a channel which reports the status of the storing operation.
+func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
+	var read int64 = 0
+
+	for read < size {
+		var limitReader = io.LimitReader(in, int64(fs.StreamChunkSize))
+
+		var broadcastBuffer = new(bytes.Buffer)
+		var toDiskReader = io.TeeReader(limitReader, broadcastBuffer)
+
+		_, err := fs.store.Write(read, key, toDiskReader)
+		if err != nil {
+			return err
+		}
+
+		cmd := &StoreCommand{
+			Offset: read,
+			Key:    key,
+			Total:  size,
+			Data:   broadcastBuffer.Bytes(),
+		}
+
+		if err := fs.broadcastCommand(&cmd); err != nil {
+			return err
+		}
+
+		read += int64(len(cmd.Data))
 	}
-
-	for _, peer := range fs.peers {
-		go func() {
-			buf := new(bytes.Buffer)
-			if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
-				fs.Logger.Error("encode error", "msg", err.Error())
-				return
-			}
-
-			if err := peer.Send(buf.Bytes()); err != nil {
-				fs.Logger.Error("send error", "msg", err.Error())
-			}
-		}()
-	}
-
 	return nil
 }
 
 func NewFileServer(config FileServerConfig) *FileServer {
 	var server *FileServer
-	defer func() {
-		if server != nil && !gobTypesRegistered {
-			server.registerGobTypes()
-		}
-	}()
 
 	ctx, cancel := context.WithCancel(config.Context)
 	storageConfig := storage.StoreConfig{
@@ -95,7 +102,7 @@ func NewFileServer(config FileServerConfig) *FileServer {
 		nodesMu:          new(sync.Mutex),
 	}
 
-	server.registerOnPeerCallbacks()
+	server.registerTransportCallbacks()
 
 	return server
 }
@@ -125,19 +132,29 @@ func (s *FileServer) Shutdown() error {
 	return nil
 }
 
-// func (fs *FileServer) broadcast(p *Message) error {
-// 	if len(fs.peers) == 0 {
-// 		return nil
-// 	}
+func (fs *FileServer) broadcastCommand(p any) error {
+	if len(fs.peers) == 0 {
+		return nil
+	}
 
-// 	peers := make([]io.Writer, 0)
-// 	for _, peer := range fs.peers {
-// 		peers = append(peers, peer)
-// 	}
+	msg := Message{
+		Payload:   p,
+		Timestamp: time.Now(),
+	}
 
-// 	m2 := io.MultiWriter(peers...)
-// 	return gob.NewEncoder(m2).Encode(p)
-// }
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
+		return err
+	}
+	data := buf.Bytes()
+
+	for _, peer := range fs.peers {
+		if err := peer.Send(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (s *FileServer) loop() {
 	defer func() {
@@ -167,13 +184,24 @@ func (s *FileServer) loop() {
 
 func (s *FileServer) handleMessage(msg *Message) error {
 	switch v := msg.Payload.(type) {
-	case *ReadCommand:
+	case ReadCommand:
 		s.Logger.Info("read command", "key", v.Key, "value", v)
-	case *StoreCommand:
-		s.Logger.Info("store command", "key", v.Key, "len", len(v.Data))
+	case StoreCommand:
+		return s.handleStoreCommand(&v)
 	default:
-		s.Logger.Warn("uknown command message", "command", v)
+		s.Logger.Warn("unknown command message", "command", fmt.Sprintf("%+v", v))
 	}
+	return nil
+}
+
+func (s *FileServer) handleStoreCommand(v *StoreCommand) error {
+	s.Logger.Info("store command", "key", v.Key, "len", len(v.Data), "offset", v.Offset)
+	n, err := s.store.Write(v.Offset, v.Key, bytes.NewReader(v.Data))
+	if err != nil {
+		return err
+	}
+	s.Logger.Info("chunk written", "offset", v.Offset, "len", len(v.Data), "disk", n)
+
 	return nil
 }
 
@@ -194,17 +222,13 @@ func (s *FileServer) connectToRemoteHost(addr string) {
 	}
 }
 
-func (s *FileServer) registerOnPeerCallbacks() {
+func (s *FileServer) registerTransportCallbacks() {
 	s.Transport.OnPeerConnected(func(p p2p.Peer) {
 		s.nodesMu.Lock()
 		defer s.nodesMu.Unlock()
 
 		s.peers[p.RemoteAddr().String()] = p
 		var addr string = p.RemoteAddr().String()
-
-		// if !p.Inbound() {
-		// 	addr = p.LocalAddr().String()
-		// }
 		s.Logger.Info("peer connected", "inbound", p.Inbound(), "addr", addr, "peer-size", len(s.peers))
 	})
 
@@ -223,12 +247,7 @@ func (s *FileServer) registerOnPeerCallbacks() {
 	})
 }
 
-var mxGobTypesRegistered sync.RWMutex
-var gobTypesRegistered = false
-
-func (s *FileServer) registerGobTypes() {
-	s.Logger.Info("Registering GOB types")
-	mxGobTypesRegistered.Lock()
-	gobTypesRegistered = true
-	mxGobTypesRegistered.Unlock()
+func init() {
+	gob.Register(Message{})
+	gob.Register(StoreCommand{})
 }

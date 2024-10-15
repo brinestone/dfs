@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 )
 
 // TcpPeer represents a remote host on the network
@@ -45,6 +46,9 @@ type TcpTransport struct {
 	rpcch               chan Rpc
 	connectCallbacks    []func(Peer)
 	disconnectCallbacks []func(Peer)
+
+	muIsClosed sync.RWMutex
+	isClosed   bool
 }
 
 func (t *TcpTransport) OnPeerConnected(f func(Peer)) {
@@ -89,25 +93,39 @@ func (t *TcpTransport) ListenAndAccept() error {
 	if err != nil {
 		return err
 	}
+
+	t.muIsClosed.Lock()
+	defer t.muIsClosed.Unlock()
+
+	t.isClosed = false
 	go t.startAcceptLoop()
 
 	return err
 }
 
 func (t *TcpTransport) Close() error {
+	var ans error
+	t.muIsClosed.Lock()
+
+	t.isClosed = true
+	t.muIsClosed.Unlock()
 	close(t.rpcch)
-	return t.listener.Close()
+	if t.listener != nil {
+		ans = t.listener.Close()
+	}
+	return ans
 }
 
 func NewTcpTransport(config TcpTransportConfig) *TcpTransport {
 	return &TcpTransport{
 		TcpTransportConfig: config,
 		rpcch:              make(chan Rpc),
+		isClosed:           true,
 	}
 }
 
 func (t *TcpTransport) startAcceptLoop() {
-	for {
+	for !t.isClosed {
 		conn, err := t.listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
@@ -142,7 +160,7 @@ func (t *TcpTransport) startPeerReadLoop(peer *TcpPeer) {
 	}()
 
 	rpc := Rpc{}
-	for {
+	for !t.isClosed {
 		if err := t.Decoder.Decode(peer, &rpc); err != nil {
 			if errors.Is(err, net.ErrClosed) || err.Error() == "EOF" {
 				break
@@ -150,7 +168,9 @@ func (t *TcpTransport) startPeerReadLoop(peer *TcpPeer) {
 			t.Logger.Error(err.Error())
 			continue
 		}
-		rpc.From = peer.RemoteAddr().String()
-		t.rpcch <- rpc
+		if !t.isClosed {
+			rpc.From = peer.RemoteAddr().String()
+			t.rpcch <- rpc
+		}
 	}
 }

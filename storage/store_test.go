@@ -66,7 +66,7 @@ func TestStore_Write(t *testing.T) {
 
 	data := bytes.NewReader([]byte("some random data"))
 
-	if err := store.Write(datakey, data); err != nil {
+	if _, err := store.Write(0, datakey, data); err != nil {
 		t.Error(err)
 	}
 }
@@ -83,7 +83,7 @@ func TestStore_Read(t *testing.T) {
 		storeCleanup(pathkey.Root)
 	})
 
-	if err := store.Write(key, dataSource); err != nil {
+	if _, err := store.Write(0, key, dataSource); err != nil {
 		t.Error(err)
 	}
 
@@ -111,7 +111,7 @@ func TestStore_Delete(t *testing.T) {
 	})
 
 	dataSource := bytes.NewReader(data)
-	if err := store.Write(key, dataSource); err != nil {
+	if _, err := store.Write(0, key, dataSource); err != nil {
 		t.Error(err)
 	}
 
@@ -137,7 +137,7 @@ func TestStore_Has_when_file_exists(t *testing.T) {
 		storeCleanup(pk.Root)
 	})
 
-	if err := store.Write(key, bytes.NewReader(data)); err != nil {
+	if _, err := store.Write(0, key, bytes.NewReader(data)); err != nil {
 		t.Error(err)
 	}
 
@@ -159,7 +159,7 @@ func TestStore_Clean(t *testing.T) {
 	storeConfig.Root = path.Join(t.TempDir(), "drop")
 	store := storage.NewStore(storeConfig)
 
-	if err := store.Write(key, bytes.NewReader(data)); err != nil {
+	if _, err := store.Write(0, key, bytes.NewReader(data)); err != nil {
 		t.Error(err)
 	}
 

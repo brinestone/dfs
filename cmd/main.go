@@ -1,10 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
-	"encoding/gob"
+	"embed"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -21,18 +20,21 @@ import (
 	"github.com/brinestone/dfs/storage"
 )
 
+var bufferSize = flag.Int64("bs", 4096, "Buffer Size")
 var serverCount = flag.Int("cnt", 2, "Number of servers to spawn")
-
 var logger = slog.Default().WithGroup("DFS")
-
 var storageRoot = flag.String("root", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem path to be used as root.")
 
 func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
 	tcpTransportConfig := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
 		Handshaker: p2p.NoopHandshaker,
-		Decoder:    p2p.DefaultDecoder{},
-		Logger:     logger,
+		Decoder: p2p.DefaultDecoder{
+			EncodingConfig: p2p.EncodingConfig{
+				BufferSize: *bufferSize,
+			},
+		},
+		Logger: logger,
 		// TODO: onPeer func
 	}
 	tcpTransport := p2p.NewTcpTransport(tcpTransportConfig)
@@ -43,13 +45,14 @@ func makeServer(ctx context.Context, listenAddr string, id string) (*server.File
 	c, cancel := context.WithCancel(ctx)
 
 	serverConfig := server.FileServerConfig{
-		ListenAddr:     listenAddr,
-		StorageRoot:    root,
-		KeyTransformer: storage.CASKeyTransformer(root),
-		Transport:      tcpTransport,
-		Id:             id,
-		Context:        c,
-		Logger:         logger.WithGroup(serverGroup),
+		ListenAddr:      listenAddr,
+		StorageRoot:     root,
+		KeyTransformer:  storage.CASKeyTransformer(root),
+		Transport:       tcpTransport,
+		Id:              id,
+		Context:         c,
+		Logger:          logger.WithGroup(serverGroup),
+		StreamChunkSize: *bufferSize,
 	}
 
 	s := server.NewFileServer(serverConfig)
@@ -83,20 +86,37 @@ func spawnServers(ctx context.Context, cb func(*server.FileServer)) {
 				logger.Error(err.Error())
 			}
 		}()
+		// if i == 0 {
 		go cb(s)
+		// }
 	}
 
 }
 
+//go:embed lorem.txt
+var sampleData embed.FS
+
 func main() {
-	gob.Register(server.Message{Payload: []byte{}})
 	flag.Parse()
 	ctx := context.Background()
 
 	spawnServers(ctx, func(fs *server.FileServer) {
 		time.Sleep(time.Second * 3)
-		data := bytes.NewReader([]byte(fmt.Sprintf("some random bytes for server: %s\n", fs.Id)))
-		fs.StoreData(fmt.Sprintf("%s--%s", fs.Id, time.Now().String()), data)
+		handle, err := sampleData.Open("lorem.txt")
+		if err != nil {
+			panic(err)
+		}
+
+		stat, err := handle.Stat()
+		if err != nil {
+			panic(err)
+		}
+
+		defer handle.Close()
+		err = fs.StoreData(fmt.Sprintf("server_%s", fs.Id), stat.Size(), handle)
+		if err != nil {
+			logger.Error("store error", "msg", err.Error())
+		}
 	})
 
 	select {}
