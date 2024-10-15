@@ -1,5 +1,5 @@
 // The enc package contains all functions and types concerning encryption/decryption operations.
-package sec
+package encdec
 
 import (
 	"crypto/rand"
@@ -45,8 +45,8 @@ func NewKeyPair() (*KeyPair, error) {
 }
 
 // Encrypts the data using the specified public key
-func Enc(keypath string, plain []byte) ([]byte, error) {
-	ciphertext := make([]byte, 0)
+func Encrypt(keypath string, plain []byte) ([]byte, error) {
+	var ciphertext []byte
 
 	pkPem, err := os.ReadFile(keypath)
 	if err != nil {
@@ -65,4 +65,28 @@ func Enc(keypath string, plain []byte) ([]byte, error) {
 	}
 
 	return ciphertext, nil
+}
+
+// Decrypts the ciphertext back to plaintext
+func Decrypt(keypath string, ciphertext []byte) ([]byte, error) {
+	var plain []byte
+	var err error
+
+	pvPem, err := os.ReadFile(keypath)
+	if err != nil {
+		return plain, err
+	}
+
+	keyblock, _ := pem.Decode(pvPem)
+	pvk, err := x509.ParsePKCS1PrivateKey(keyblock.Bytes)
+	if err != nil {
+		return plain, err
+	}
+
+	plain, err = rsa.DecryptPKCS1v15(rand.Reader, pvk, ciphertext)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return plain, err
 }
