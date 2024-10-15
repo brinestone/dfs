@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brinestone/dfs/encdec"
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/storage"
 )
@@ -23,6 +24,7 @@ type FileServerConfig struct {
 	Logger          *slog.Logger
 	Id              string
 	StreamChunkSize int64
+	encdec.KeyPair
 }
 
 type FileServer struct {
@@ -49,7 +51,7 @@ type StoreCommand struct {
 
 type Message struct {
 	Timestamp time.Time
-	Payload   interface{}
+	Payload   any
 }
 
 // Writes the data to the disk and also broadcasts it to other nodes and returns a channel which reports the status of the storing operation.
