@@ -23,6 +23,8 @@ type FileServerConfig struct {
 	Logger          *slog.Logger
 	Id              string
 	StreamChunkSize int64
+	Encoder         p2p.Encoder
+	Decoder         p2p.Decoder
 }
 
 type FileServer struct {
@@ -60,9 +62,12 @@ func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
 		var limitReader = io.LimitReader(in, int64(fs.StreamChunkSize))
 
 		var broadcastBuffer = new(bytes.Buffer)
-		var toDiskReader = io.TeeReader(limitReader, broadcastBuffer)
+		toDiskReader, err := fs.Encoder.EncodeStream(io.TeeReader(limitReader, broadcastBuffer))
+		if err != nil {
+			return err
+		}
 
-		_, err := fs.store.Write(read, key, toDiskReader)
+		_, err = fs.store.Write(read, key, toDiskReader)
 		if err != nil {
 			return err
 		}

@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -27,18 +28,45 @@ var publicKey = flag.String("pbk", "", "Public key for encryption")
 var logger = slog.Default().WithGroup("DFS")
 var storageRoot = flag.String("root", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem path to be used as root.")
 
-func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
-	dec := p2p.NewSecuredDecoder(p2p.EncodingConfig{
-		BufferSize: *bufferSize,
-	}, *privateKey)
+func randomPort() int {
+	var ans int
+	var failCount = 0
+	for failCount <= 50 {
+		ans = int(math.Max(1025, float64(rand.Int31n(64_512))))
+		if l, err := net.Listen("tcp", fmt.Sprintf(":%d", ans)); err == nil {
+			l.Close()
+			break
+		}
+		failCount++
+	}
+	if ans == 0 {
+		panic(errors.New("cannot find available tcp port"))
+	}
+	return ans
+}
 
-	enc := p2p.NewSecureEncoder(*publicKey)
+func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
+	var encoder p2p.Encoder
+	var decoder p2p.Decoder
+	var encodingConfig p2p.EncodingConfig = p2p.EncodingConfig{
+		BufferSize: *bufferSize,
+	}
+
+	if len(*privateKey) == 0 || len(*publicKey) == 0 {
+		encoder = p2p.NewPlainEncoder(encodingConfig)
+		decoder = p2p.NewPlainDecoder(encodingConfig)
+	} else {
+		decoder = p2p.NewSecuredDecoder(p2p.EncodingConfig{
+			BufferSize: *bufferSize,
+		}, *privateKey)
+		encoder = p2p.NewSecureEncoder(*publicKey, encodingConfig)
+	}
 
 	tcpTransportConfig := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
 		Handshaker: p2p.NoopHandshaker,
-		Decoder:    dec,
-		Encoder:    enc,
+		Decoder:    decoder,
+		Encoder:    encoder,
 		Logger:     logger,
 		// TODO: onPeer func
 	}
@@ -50,6 +78,8 @@ func makeServer(ctx context.Context, listenAddr string, id string) (*server.File
 	c, cancel := context.WithCancel(ctx)
 
 	serverConfig := server.FileServerConfig{
+		Encoder:         encoder,
+		Decoder:         decoder,
 		ListenAddr:      listenAddr,
 		StorageRoot:     root,
 		KeyTransformer:  storage.CASKeyTransformer(root),
@@ -75,7 +105,7 @@ func spawnServers(ctx context.Context, cb func(*server.FileServer)) {
 
 	// Find available port
 	for c < *serverCount {
-		t := int(math.Max(1025, float64(rand.Intn(65_536))))
+		t := randomPort()
 
 		addr := fmt.Sprintf("0.0.0.0:%d", t)
 		if l, err := net.Listen("tcp", addr); err == nil {

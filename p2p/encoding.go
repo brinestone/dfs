@@ -1,6 +1,8 @@
 package p2p
 
 import (
+	"bytes"
+	"errors"
 	"io"
 
 	"github.com/brinestone/dfs/encdec"
@@ -12,10 +14,36 @@ type EncodingConfig struct {
 
 type Encoder interface {
 	Encode(io.Writer, []byte) (int, error)
+	EncodeStream(io.Reader) (io.Reader, error)
 }
 
 type SecureEncoder struct {
 	publicKey string
+	EncodingConfig
+}
+
+func (se SecureEncoder) EncodeStream(in io.Reader) (io.Reader, error) {
+	var ans = new(bytes.Buffer)
+	for {
+		buf := make([]byte, se.BufferSize)
+		n, err := in.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+
+		ciphertext, err := encdec.Encrypt(se.publicKey, buf[:n])
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = ans.Write(ciphertext)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ans, nil
 }
 
 func (ee SecureEncoder) Encode(out io.Writer, data []byte) (int, error) {
@@ -27,13 +55,34 @@ func (ee SecureEncoder) Encode(out io.Writer, data []byte) (int, error) {
 	return out.Write(ciphertext)
 }
 
-func NewSecureEncoder(publicKey string) SecureEncoder {
+func NewSecureEncoder(publicKey string, config EncodingConfig) SecureEncoder {
 	return SecureEncoder{
-		publicKey: publicKey,
+		publicKey:      publicKey,
+		EncodingConfig: config,
 	}
 }
 
 type PlainEncoder struct {
+	EncodingConfig
+}
+
+func (pe PlainEncoder) EncodeStream(in io.Reader) (io.Reader, error) {
+	var ans = new(bytes.Buffer)
+	for {
+		buf := make([]byte, pe.BufferSize)
+		n, err := in.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+
+		_, err = ans.Write(buf)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ans, nil
 }
 
 func (pe PlainEncoder) Encode(out io.Writer, data []byte) (int, error) {
@@ -41,8 +90,10 @@ func (pe PlainEncoder) Encode(out io.Writer, data []byte) (int, error) {
 }
 
 // Creates a new PlainEncoder
-func NewPlainEncoder() PlainEncoder {
-	return PlainEncoder{}
+func NewPlainEncoder(config EncodingConfig) PlainEncoder {
+	return PlainEncoder{
+		EncodingConfig: config,
+	}
 }
 
 type Decoder interface {

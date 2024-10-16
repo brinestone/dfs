@@ -13,21 +13,21 @@ import (
 	"strings"
 )
 
-type PathKey struct {
+type KeyPath struct {
 	Pathname string
 	Root     string
 	Filename string
 }
 
-func (p PathKey) FilePath() string {
+func (p KeyPath) FilePath() string {
 	return path.Join(p.Pathname, p.Filename)
 }
 
-type KeyTransformer func(string) PathKey
+type KeyTransformer func(string) KeyPath
 
 func NoopKeyTransformer(root string) KeyTransformer {
-	return func(k string) PathKey {
-		return PathKey{
+	return func(k string) KeyPath {
+		return KeyPath{
 			Pathname: k,
 			Root:     root,
 			Filename: strings.ReplaceAll(k, " \t", "_"),
@@ -36,11 +36,11 @@ func NoopKeyTransformer(root string) KeyTransformer {
 }
 
 func CASKeyTransformer(root string) KeyTransformer {
-	return func(k string) PathKey {
+	return func(k string) KeyPath {
 		digest := sha1.Sum([]byte(k))
 		digestStr := hex.EncodeToString(digest[:])
 
-		blockSize := 5
+		blockSize := 10
 		sliceLen := len(digestStr) / blockSize
 
 		segments := make([]string, sliceLen)
@@ -53,7 +53,7 @@ func CASKeyTransformer(root string) KeyTransformer {
 		pathName := []string{root}
 		pathName = append(pathName, segments...)
 
-		return PathKey{
+		return KeyPath{
 			Filename: digestStr,
 			Pathname: path.Join(pathName...),
 			Root:     path.Join(root, segments[0]),
@@ -64,8 +64,7 @@ func CASKeyTransformer(root string) KeyTransformer {
 type StoreConfig struct {
 	TransformKey KeyTransformer
 	Logger       *slog.Logger
-	// Root directory of the store
-	Root string
+	Root         string
 }
 
 type Store struct {

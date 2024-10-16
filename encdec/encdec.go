@@ -127,3 +127,41 @@ func Decrypt(keypath string, ciphertext []byte) ([]byte, error) {
 
 	return plain, err
 }
+
+func EncryptedReader(keyPath string, in io.Reader) (io.Reader, error) {
+	var ans io.Reader
+
+	pkPem, err := os.ReadFile(keyPath)
+	if err != nil {
+		return ans, err
+	}
+
+	keyblock, _ := pem.Decode(pkPem)
+	pk, err := x509.ParsePKIXPublicKey(keyblock.Bytes)
+	if err != nil {
+		return ans, err
+	}
+
+	out := new(bytes.Buffer)
+
+	for {
+		buf := make([]byte, keySize/16)
+		n, err := in.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return ans, err
+		}
+
+		b, err := rsa.EncryptPKCS1v15(rand.Reader, pk.(*rsa.PublicKey), buf[:n])
+		if err != nil {
+			return ans, err
+		}
+
+		out.Write(b)
+	}
+
+	ans = out
+
+	return ans, nil
+}
