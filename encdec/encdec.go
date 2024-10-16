@@ -2,21 +2,28 @@
 package encdec
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"io"
 	"os"
 )
+
+const keySize = 4096
 
 type KeyPair struct {
 	Private []byte
 	Public  []byte
 }
 
+var ErrInvalidKeyPair = errors.New("key pair is not valid")
+
 // Generates asymmetric key-pair
 func NewKeyPair() (*KeyPair, error) {
-	pvk, err := rsa.GenerateKey(rand.Reader, 2048)
+	pvk, err := rsa.GenerateKey(rand.Reader, keySize)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +52,7 @@ func NewKeyPair() (*KeyPair, error) {
 }
 
 // Encrypts the data using the specified public key
-func Encrypt(keypath string, plain []byte) ([]byte, error) {
+func Encrypt(keypath string, plaintext []byte) ([]byte, error) {
 	var ciphertext []byte
 
 	pkPem, err := os.ReadFile(keypath)
@@ -59,10 +66,25 @@ func Encrypt(keypath string, plain []byte) ([]byte, error) {
 		return ciphertext, err
 	}
 
-	ciphertext, err = rsa.EncryptPKCS1v15(rand.Reader, pk.(*rsa.PublicKey), plain)
-	if err != nil {
-		return make([]byte, 0), err
+	resBuf := new(bytes.Buffer)
+	src := bytes.NewReader(plaintext)
+
+	for {
+		buf := make([]byte, keySize/16)
+		n, err := src.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return make([]byte, 0), err
+		}
+
+		res, err := rsa.EncryptPKCS1v15(rand.Reader, pk.(*rsa.PublicKey), buf[:n])
+		if err != nil {
+			return make([]byte, 0), err
+		}
+		resBuf.Write(res)
 	}
+	ciphertext = resBuf.Bytes()
 
 	return ciphertext, nil
 }
@@ -83,10 +105,25 @@ func Decrypt(keypath string, ciphertext []byte) ([]byte, error) {
 		return plain, err
 	}
 
-	plain, err = rsa.DecryptPKCS1v15(rand.Reader, pvk, ciphertext)
-	if err != nil {
-		return []byte{}, err
+	resBuf := new(bytes.Buffer)
+	src := bytes.NewReader(ciphertext)
+
+	for {
+		buf := make([]byte, keySize/8)
+		n, err := src.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return make([]byte, 0), err
+		}
+
+		plaintext, err := rsa.DecryptPKCS1v15(rand.Reader, pvk, buf[:n])
+		if err != nil {
+			return []byte{}, err
+		}
+		resBuf.Write(plaintext)
 	}
+	plain = resBuf.Bytes()
 
 	return plain, err
 }

@@ -21,7 +21,7 @@ func TestDecode(t *testing.T) {
 		t.Error(err)
 	}
 
-	decoder := p2p.DefaultDecoder{
+	decoder := p2p.PlainDecoder{
 		EncodingConfig: encodingConfig,
 	}
 

@@ -52,6 +52,11 @@ func createTempKeyPair(t *testing.T) (string, string) {
 	return pvPath, pbPath
 }
 
+func Test_Validate(t *testing.T) {
+	private, public := createTempKeyPair(t)
+	assert.Nil(t, encdec.Validate(public, private))
+}
+
 func TestEnc(t *testing.T) {
 	private, public := createTempKeyPair(t)
 	data := []byte("some really random data")

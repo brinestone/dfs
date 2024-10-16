@@ -13,6 +13,10 @@ type TcpPeer struct {
 	net.Conn
 	// true if the connection was dialed and false if otherwise
 	outbound bool
+	// The peer's public key
+	publicKey string
+	// The encoder for this peer
+	encoder Encoder
 }
 
 func (t *TcpPeer) Inbound() bool {
@@ -20,16 +24,17 @@ func (t *TcpPeer) Inbound() bool {
 }
 
 func (t *TcpPeer) Send(data []byte) error {
-	if _, err := t.Write(data); err != nil {
+	if _, err := t.encoder.Encode(t, data); err != nil {
 		return err
 	}
 	return nil
 }
 
-func newTcpPeer(conn net.Conn, outbound bool) *TcpPeer {
+func newTcpPeer(conn net.Conn, outbound bool, encoder Encoder) *TcpPeer {
 	return &TcpPeer{
 		Conn:     conn,
 		outbound: outbound,
+		encoder:  encoder,
 	}
 }
 
@@ -38,6 +43,7 @@ type TcpTransportConfig struct {
 	Handshaker HandshakeFunc
 	Logger     *slog.Logger
 	Decoder    Decoder
+	Encoder    Encoder
 }
 
 type TcpTransport struct {
@@ -65,7 +71,7 @@ func (t *TcpTransport) Dial(addr string) error {
 		return err
 	}
 
-	peer := newTcpPeer(conn, true)
+	peer := newTcpPeer(conn, true, t.Encoder)
 	if err := t.Handshaker(peer); err != nil {
 		defer peer.Close()
 		return err
@@ -133,7 +139,7 @@ func (t *TcpTransport) startAcceptLoop() {
 			}
 			t.Logger.Error(err.Error())
 		}
-		peer := newTcpPeer(conn, false)
+		peer := newTcpPeer(conn, false, t.Encoder)
 
 		if err := t.Handshaker(peer); err != nil {
 			t.Logger.Error(err.Error())

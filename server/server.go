@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/brinestone/dfs/encdec"
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/storage"
 )
@@ -24,12 +23,11 @@ type FileServerConfig struct {
 	Logger          *slog.Logger
 	Id              string
 	StreamChunkSize int64
-	encdec.KeyPair
 }
 
 type FileServer struct {
 	FileServerConfig
-	nodesMu *sync.Mutex
+	nodesMu sync.Mutex
 	peers   map[string]p2p.Peer
 
 	store        *storage.Store
@@ -85,7 +83,7 @@ func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
 	return nil
 }
 
-func NewFileServer(config FileServerConfig) *FileServer {
+func NewFileServer(config FileServerConfig) (*FileServer, error) {
 	var server *FileServer
 
 	ctx, cancel := context.WithCancel(config.Context)
@@ -101,12 +99,12 @@ func NewFileServer(config FileServerConfig) *FileServer {
 		shutdownFunc:     cancel,
 		ctx:              ctx,
 		peers:            make(map[string]p2p.Peer),
-		nodesMu:          new(sync.Mutex),
+		nodesMu:          sync.Mutex{},
 	}
 
 	server.registerTransportCallbacks()
 
-	return server
+	return server, nil
 }
 
 func (s *FileServer) Start(addrs ...string) error {

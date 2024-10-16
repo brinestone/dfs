@@ -9,7 +9,13 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}${pathSeparator}cmd/main.go"
+            "program": "${workspaceFolder}${pathSeparator}cmd${pathSeparator}main.go",
+            "args": [
+                "-pk",
+                "${workspaceFolder}${pathSeparator}tmp${pathSeparator}pk",
+                "-pbk",
+                "${workspaceFolder}${pathSeparator}tmp${pathSeparator}pk.pub"
+            ]
         }
     ]
 }

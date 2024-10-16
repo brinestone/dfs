@@ -22,19 +22,24 @@ import (
 
 var bufferSize = flag.Int64("bs", 4096, "Buffer Size")
 var serverCount = flag.Int("cnt", 2, "Number of servers to spawn")
+var privateKey = flag.String("pk", "", "Private key for decryption")
+var publicKey = flag.String("pbk", "", "Public key for encryption")
 var logger = slog.Default().WithGroup("DFS")
 var storageRoot = flag.String("root", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem path to be used as root.")
 
 func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
+	dec := p2p.NewSecuredDecoder(p2p.EncodingConfig{
+		BufferSize: *bufferSize,
+	}, *privateKey)
+
+	enc := p2p.NewSecureEncoder(*publicKey)
+
 	tcpTransportConfig := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
 		Handshaker: p2p.NoopHandshaker,
-		Decoder: p2p.DefaultDecoder{
-			EncodingConfig: p2p.EncodingConfig{
-				BufferSize: *bufferSize,
-			},
-		},
-		Logger: logger,
+		Decoder:    dec,
+		Encoder:    enc,
+		Logger:     logger,
 		// TODO: onPeer func
 	}
 	tcpTransport := p2p.NewTcpTransport(tcpTransportConfig)
@@ -55,7 +60,11 @@ func makeServer(ctx context.Context, listenAddr string, id string) (*server.File
 		StreamChunkSize: *bufferSize,
 	}
 
-	s := server.NewFileServer(serverConfig)
+	s, err := server.NewFileServer(serverConfig)
+	if err != nil {
+		panic(err)
+	}
+
 	return s, cancel
 }
 
@@ -86,9 +95,7 @@ func spawnServers(ctx context.Context, cb func(*server.FileServer)) {
 				logger.Error(err.Error())
 			}
 		}()
-		// if i == 0 {
 		go cb(s)
-		// }
 	}
 
 }

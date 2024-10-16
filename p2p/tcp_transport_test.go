@@ -42,7 +42,7 @@ func makeTransportConfig(port int) p2p.TcpTransportConfig {
 		ListenAddr: listenAddr,
 		Logger:     logger,
 		Handshaker: p2p.NoopHandshaker,
-		Decoder: p2p.DefaultDecoder{
+		Decoder: p2p.PlainDecoder{
 			EncodingConfig: encodingConfig,
 		},
 	}
