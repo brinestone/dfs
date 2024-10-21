@@ -1,10 +1,14 @@
 package p2p
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
+
+	"github.com/brinestone/dfs/encoding"
 )
 
 // TcpPeer represents a remote host on the network
@@ -13,10 +17,18 @@ type TcpPeer struct {
 	net.Conn
 	// true if the connection was dialed and false if otherwise
 	outbound bool
-	// The peer's public key
-	publicKey string
 	// The encoder for this peer
-	encoder Encoder
+	encoder encoding.Encoder
+	// The decoder for this peer
+	decoder encoding.Decoder
+}
+
+func (t *TcpPeer) SetEncoder(e encoding.Encoder) {
+	t.encoder = e
+}
+
+func (t *TcpPeer) SetDecoder(d encoding.Decoder) {
+	t.decoder = d
 }
 
 func (t *TcpPeer) Inbound() bool {
@@ -24,26 +36,28 @@ func (t *TcpPeer) Inbound() bool {
 }
 
 func (t *TcpPeer) Send(data []byte) error {
-	if _, err := t.encoder.Encode(t, data); err != nil {
+	out, err := t.encoder.Encode(data)
+	if err != nil {
+		return err
+	}
+
+	if _, err = t.Write(out); err != nil {
 		return err
 	}
 	return nil
 }
 
-func newTcpPeer(conn net.Conn, outbound bool, encoder Encoder) *TcpPeer {
+func newTcpPeer(conn net.Conn, outbound bool) *TcpPeer {
 	return &TcpPeer{
 		Conn:     conn,
 		outbound: outbound,
-		encoder:  encoder,
 	}
 }
 
 type TcpTransportConfig struct {
-	ListenAddr string
-	Handshaker HandshakeFunc
-	Logger     *slog.Logger
-	Decoder    Decoder
-	Encoder    Encoder
+	ListenAddr    string
+	ExecHandshake HandshakeFunc
+	Logger        *slog.Logger
 }
 
 type TcpTransport struct {
@@ -71,8 +85,8 @@ func (t *TcpTransport) Dial(addr string) error {
 		return err
 	}
 
-	peer := newTcpPeer(conn, true, t.Encoder)
-	if err := t.Handshaker(peer); err != nil {
+	peer := newTcpPeer(conn, true)
+	if err := t.ExecHandshake(peer); err != nil {
 		defer peer.Close()
 		return err
 	}
@@ -134,29 +148,29 @@ func (t *TcpTransport) startAcceptLoop() {
 	for !t.isClosed {
 		conn, err := t.listener.Accept()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
 				break
 			}
 			t.Logger.Error(err.Error())
+			continue
 		}
-		peer := newTcpPeer(conn, false, t.Encoder)
+		peer := newTcpPeer(conn, false)
 
-		if err := t.Handshaker(peer); err != nil {
-			t.Logger.Error(err.Error())
+		if err := t.ExecHandshake(peer); err != nil {
 			_ = peer.Close()
 			continue
 		}
 
-		if len(t.connectCallbacks) > 0 {
-			for _, f := range t.connectCallbacks {
-				go f(peer)
-			}
-		}
 		go t.startPeerReadLoop(peer)
 	}
 }
 
 func (t *TcpTransport) startPeerReadLoop(peer *TcpPeer) {
+	if len(t.connectCallbacks) > 0 {
+		for _, f := range t.connectCallbacks {
+			go f(peer)
+		}
+	}
 	defer func() {
 		if len(t.disconnectCallbacks) > 0 {
 			for _, f := range t.disconnectCallbacks {
@@ -166,15 +180,15 @@ func (t *TcpTransport) startPeerReadLoop(peer *TcpPeer) {
 	}()
 
 	rpc := Rpc{}
+	buf := new(bytes.Buffer)
 	for !t.isClosed {
-		if err := t.Decoder.Decode(peer, &rpc); err != nil {
-			if errors.Is(err, net.ErrClosed) || err.Error() == "EOF" {
-				break
-			}
-			t.Logger.Error(err.Error())
+		buf.Reset()
+		if err := peer.decoder.DecodeStream(peer, buf); err != nil {
+			t.Logger.Error("tcp decode error", "msg", err.Error())
 			continue
 		}
 		if !t.isClosed {
+			rpc.Payload = buf.Bytes()
 			rpc.From = peer.RemoteAddr().String()
 			t.rpcch <- rpc
 		}

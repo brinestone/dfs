@@ -13,4 +13,4 @@ test:
 	@go test ./... -v
 
 dev:
-	@$$GOPATH/bin/air --build.cmd "make build" --build.bin "./bin/app -pk $$PWD/tmp/pk -pbk $$PWD/tmp/pk.pub" --build.exclude_dir "templates,build,bin"
+	@$$GOPATH/bin/air --build.cmd "make build" --build.bin "./bin/app" --build.exclude_dir "templates,build,bin"

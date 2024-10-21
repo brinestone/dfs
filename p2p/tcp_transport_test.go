@@ -12,12 +12,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brinestone/dfs/encoding"
 	"github.com/brinestone/dfs/p2p"
 
 	"github.com/stretchr/testify/assert"
 )
 
 var logger = slog.Default().WithGroup("[store_test]")
+var encodingConfig = encoding.EncodingConfig{
+	BuffSize: 1024,
+}
 
 func randomPort(t *testing.T) int {
 	var ans int
@@ -39,12 +43,9 @@ func randomPort(t *testing.T) int {
 func makeTransportConfig(port int) p2p.TcpTransportConfig {
 	listenAddr := fmt.Sprintf(":%d", port)
 	return p2p.TcpTransportConfig{
-		ListenAddr: listenAddr,
-		Logger:     logger,
-		Handshaker: p2p.NoopHandshaker,
-		Decoder: p2p.PlainDecoder{
-			EncodingConfig: encodingConfig,
-		},
+		ListenAddr:    listenAddr,
+		Logger:        logger,
+		ExecHandshake: p2p.NoopHandshaker(encodingConfig),
 	}
 }
 
@@ -103,7 +104,7 @@ func testDial_With_NoReceiver(t *testing.T, tr *p2p.TcpTransport) {
 func testDial_With_DataSending(t *testing.T, t1 *p2p.TcpTransport, t2 *p2p.TcpTransport) {
 	ctx, cancel := context.WithTimeout(context.TODO(), 50*time.Millisecond)
 	t.Cleanup(cancel)
-	data := make([]byte, encodingConfig.BufferSize)
+	data := make([]byte, encodingConfig.BuffSize)
 	_, err := io.ReadFull(cryptoRand.Reader, data)
 	if err != nil {
 		t.Error(err)

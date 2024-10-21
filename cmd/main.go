@@ -16,6 +16,7 @@ import (
 	"path"
 	"time"
 
+	"github.com/brinestone/dfs/encoding"
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/server"
 	"github.com/brinestone/dfs/storage"
@@ -23,8 +24,7 @@ import (
 
 var bufferSize = flag.Int64("bs", 4096, "Buffer Size")
 var serverCount = flag.Int("cnt", 2, "Number of servers to spawn")
-var privateKey = flag.String("pk", "", "Private key for decryption")
-var publicKey = flag.String("pbk", "", "Public key for encryption")
+var handshakeTimeout = flag.Duration("hd", time.Second*1000, "Handshake timeout")
 var logger = slog.Default().WithGroup("DFS")
 var storageRoot = flag.String("root", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem path to be used as root.")
 
@@ -46,28 +46,15 @@ func randomPort() int {
 }
 
 func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
-	var encoder p2p.Encoder
-	var decoder p2p.Decoder
-	var encodingConfig p2p.EncodingConfig = p2p.EncodingConfig{
-		BufferSize: *bufferSize,
+	var encodingConfig encoding.EncodingConfig = encoding.EncodingConfig{
+		BuffSize: *bufferSize,
 	}
-
-	if len(*privateKey) == 0 || len(*publicKey) == 0 {
-		encoder = p2p.NewPlainEncoder(encodingConfig)
-		decoder = p2p.NewPlainDecoder(encodingConfig)
-	} else {
-		decoder = p2p.NewSecuredDecoder(p2p.EncodingConfig{
-			BufferSize: *bufferSize,
-		}, *privateKey)
-		encoder = p2p.NewSecureEncoder(*publicKey, encodingConfig)
-	}
+	var handshaker p2p.HandshakeFunc = p2p.KeyExchangeHandShaker(logger, *handshakeTimeout, encodingConfig)
 
 	tcpTransportConfig := p2p.TcpTransportConfig{
-		ListenAddr: listenAddr,
-		Handshaker: p2p.NoopHandshaker,
-		Decoder:    decoder,
-		Encoder:    encoder,
-		Logger:     logger,
+		ListenAddr:    listenAddr,
+		ExecHandshake: handshaker,
+		Logger:        logger,
 		// TODO: onPeer func
 	}
 	tcpTransport := p2p.NewTcpTransport(tcpTransportConfig)
@@ -78,8 +65,8 @@ func makeServer(ctx context.Context, listenAddr string, id string) (*server.File
 	c, cancel := context.WithCancel(ctx)
 
 	serverConfig := server.FileServerConfig{
-		Encoder:         encoder,
-		Decoder:         decoder,
+		Encoder:         encoding.NewPlainEncoderDecoder(encodingConfig),
+		Decoder:         encoding.NewPlainEncoderDecoder(encodingConfig),
 		ListenAddr:      listenAddr,
 		StorageRoot:     root,
 		KeyTransformer:  storage.CASKeyTransformer(root),

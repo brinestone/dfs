@@ -40,7 +40,7 @@ func CASKeyTransformer(root string) KeyTransformer {
 		digest := sha1.Sum([]byte(k))
 		digestStr := hex.EncodeToString(digest[:])
 
-		blockSize := 10
+		blockSize := 5
 		sliceLen := len(digestStr) / blockSize
 
 		segments := make([]string, sliceLen)
@@ -56,7 +56,7 @@ func CASKeyTransformer(root string) KeyTransformer {
 		return KeyPath{
 			Filename: digestStr,
 			Pathname: path.Join(pathName...),
-			Root:     path.Join(root, segments[0]),
+			Root:     root,
 		}
 	}
 }

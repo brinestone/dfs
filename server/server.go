@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/brinestone/dfs/encoding"
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/storage"
 )
@@ -23,8 +25,8 @@ type FileServerConfig struct {
 	Logger          *slog.Logger
 	Id              string
 	StreamChunkSize int64
-	Encoder         p2p.Encoder
-	Decoder         p2p.Decoder
+	Encoder         encoding.Encoder
+	Decoder         encoding.Decoder
 }
 
 type FileServer struct {
@@ -54,36 +56,26 @@ type Message struct {
 	Payload   any
 }
 
-// Writes the data to the disk and also broadcasts it to other nodes and returns a channel which reports the status of the storing operation.
+// Writes the data to the disk.
 func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
 	var read int64 = 0
 
 	for read < size {
-		var limitReader = io.LimitReader(in, int64(fs.StreamChunkSize))
+		buf := make([]byte, fs.StreamChunkSize)
+		n, err := in.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return err
+		}
 
-		var broadcastBuffer = new(bytes.Buffer)
-		toDiskReader, err := fs.Encoder.EncodeStream(io.TeeReader(limitReader, broadcastBuffer))
+		encoded, err := fs.Encoder.Encode(buf)
 		if err != nil {
 			return err
 		}
 
-		_, err = fs.store.Write(read, key, toDiskReader)
-		if err != nil {
-			return err
-		}
-
-		cmd := &StoreCommand{
-			Offset: read,
-			Key:    key,
-			Total:  size,
-			Data:   broadcastBuffer.Bytes(),
-		}
-
-		if err := fs.broadcastCommand(&cmd); err != nil {
-			return err
-		}
-
-		read += int64(len(cmd.Data))
+		fs.store.Write(read, key, bytes.NewReader(encoded))
+		read += int64(len(encoded))
 	}
 	return nil
 }
@@ -113,7 +105,7 @@ func NewFileServer(config FileServerConfig) (*FileServer, error) {
 }
 
 func (s *FileServer) Start(addrs ...string) error {
-	s.Logger.Info("Server started", "address", s.ListenAddr)
+	s.Logger.Info("Server started", "addr", s.ListenAddr)
 	if err := s.Transport.ListenAndAccept(); err != nil {
 		return err
 	}
@@ -137,29 +129,29 @@ func (s *FileServer) Shutdown() error {
 	return nil
 }
 
-func (fs *FileServer) broadcastCommand(p any) error {
-	if len(fs.peers) == 0 {
-		return nil
-	}
+// func (fs *FileServer) broadcastCommand(p any) error {
+// 	if len(fs.peers) == 0 {
+// 		return nil
+// 	}
 
-	msg := Message{
-		Payload:   p,
-		Timestamp: time.Now(),
-	}
+// 	msg := Message{
+// 		Payload:   p,
+// 		Timestamp: time.Now(),
+// 	}
 
-	buf := new(bytes.Buffer)
-	if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
-		return err
-	}
-	data := buf.Bytes()
+// 	buf := new(bytes.Buffer)
+// 	if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
+// 		return err
+// 	}
+// 	data := buf.Bytes()
 
-	for _, peer := range fs.peers {
-		if err := peer.Send(data); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// 	for _, peer := range fs.peers {
+// 		if err := peer.Send(data); err != nil {
+// 			return err
+// 		}
+// 	}
+// 	return nil
+// }
 
 func (s *FileServer) loop() {
 	defer func() {
