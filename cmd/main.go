@@ -112,7 +112,9 @@ func spawnServers(ctx context.Context, cb func(*server.FileServer)) {
 				logger.Error(err.Error())
 			}
 		}()
-		go cb(s)
+		if i > 0 {
+			go cb(s)
+		}
 	}
 
 }

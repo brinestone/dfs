@@ -11,23 +11,19 @@ import (
 
 // Decrypts a stream
 func DecStream(key []byte, cs int, in io.Reader, out io.Writer) error {
-	for {
-		buf := make([]byte, cs)
-		n, err := in.Read(buf)
-		if n == 0 && errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return err
-		}
+	buf := make([]byte, cs*100)
+	n, err := in.Read(buf)
+	if err != nil {
+		return err
+	}
 
-		pt, err := Dec(key, buf)
-		if err != nil {
-			return nil
-		}
+	pt, err := Dec(key, buf[:n])
+	if err != nil {
+		return nil
+	}
 
-		if _, err := out.Write(pt); err != nil {
-			return err
-		}
+	if _, err := out.Write(pt); err != nil {
+		return err
 	}
 	return nil
 }
@@ -35,7 +31,7 @@ func DecStream(key []byte, cs int, in io.Reader, out io.Writer) error {
 // Encrypts a stream
 func EncStream(key []byte, cs int, in io.Reader, out io.Writer) error {
 	for {
-		buf := make([]byte, cs)
+		buf := make([]byte, cs*100)
 		n, err := in.Read(buf)
 		if n == 0 && errors.Is(err, io.EOF) {
 			break

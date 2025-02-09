@@ -40,15 +40,21 @@ type FileServer struct {
 }
 
 type ReadCommand struct {
-	Key string
+	Key     string
+	Size    uint64
+	Offsets []uint64
 }
 
-type StoreCommand struct {
-	Offset   int64
-	Total    int64
-	Key      string
-	Data     []byte
-	Checksum string
+type ReadResponse struct {
+	Key    string
+	Offset uint64
+	Data   []byte
+}
+
+type StoreUpdatedCommand struct {
+	Timestamp time.Time
+	Key       string
+	Stat      *storage.DataStat
 }
 
 type Message struct {
@@ -74,9 +80,25 @@ func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
 			return err
 		}
 
-		fs.store.Write(read, key, bytes.NewReader(encoded))
+		fs.store.Write(key, bytes.NewReader(encoded), storage.UsingComputedPieceSize(), storage.UsingOffset(uint64(read)))
 		read += int64(len(encoded))
 	}
+
+	stat, err := fs.store.DataStatFor(key, storage.UsingPieceSize(uint64(fs.StreamChunkSize)))
+	if err != nil {
+		return err
+	}
+
+	cmd := StoreUpdatedCommand{
+		Key:       key,
+		Timestamp: time.Now(),
+		Stat:      stat,
+	}
+
+	if err := fs.broadcastCommand(cmd); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -129,29 +151,49 @@ func (s *FileServer) Shutdown() error {
 	return nil
 }
 
-// func (fs *FileServer) broadcastCommand(p any) error {
-// 	if len(fs.peers) == 0 {
-// 		return nil
-// 	}
+func (fs *FileServer) broadcastCommand(p any) error {
+	if len(fs.peers) == 0 {
+		return nil
+	}
 
-// 	msg := Message{
-// 		Payload:   p,
-// 		Timestamp: time.Now(),
-// 	}
+	msg := Message{
+		Payload:   p,
+		Timestamp: time.Now(),
+	}
 
-// 	buf := new(bytes.Buffer)
-// 	if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
-// 		return err
-// 	}
-// 	data := buf.Bytes()
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
+		return err
+	}
+	data := buf.Bytes()
 
-// 	for _, peer := range fs.peers {
-// 		if err := peer.Send(data); err != nil {
-// 			return err
-// 		}
-// 	}
-// 	return nil
-// }
+	for _, peer := range fs.peers {
+		if err := peer.Send(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (fs *FileServer) send(to string, p any) error {
+	peer, ok := fs.peers[to]
+	if !ok {
+		fs.Logger.Warn("peer not found", "addr", to)
+		return nil
+	}
+
+	msg := Message{
+		Payload:   p,
+		Timestamp: time.Now(),
+	}
+
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(&msg); err != nil {
+		return err
+	}
+	data := buf.Bytes()
+	return peer.Send(data)
+}
 
 func (s *FileServer) loop() {
 	defer func() {
@@ -169,7 +211,7 @@ func (s *FileServer) loop() {
 					continue
 				}
 
-				if err := s.handleMessage(&msg); err != nil {
+				if err := s.handleMessage(&msg, rpc.From); err != nil {
 					s.Logger.Error("handling error", "msg", err.Error())
 				}
 			}
@@ -179,26 +221,73 @@ func (s *FileServer) loop() {
 	}
 }
 
-func (s *FileServer) handleMessage(msg *Message) error {
+func (s *FileServer) handleMessage(msg *Message, from string) error {
 	switch v := msg.Payload.(type) {
 	case ReadCommand:
-		s.Logger.Info("read command", "key", v.Key, "value", v)
-	case StoreCommand:
-		return s.handleStoreCommand(&v)
+		go s.handleReadCommand(&v, from)
+	case StoreUpdatedCommand:
+		go s.handleStoreUpdatedCommand(&v)
+	case ReadResponse:
+		go s.handleReadResponse(&v)
 	default:
 		s.Logger.Warn("unknown command message", "command", fmt.Sprintf("%+v", v))
 	}
 	return nil
 }
 
-func (s *FileServer) handleStoreCommand(v *StoreCommand) error {
-	s.Logger.Info("store command", "key", v.Key, "len", len(v.Data), "offset", v.Offset)
-	n, err := s.store.Write(v.Offset, v.Key, bytes.NewReader(v.Data))
+func (s *FileServer) handleReadResponse(cmd *ReadResponse) {
+	println(cmd)
+}
+
+func (s *FileServer) handleReadCommand(cmd *ReadCommand, from string) {
+	for _, v := range cmd.Offsets {
+		buf := make([]byte, cmd.Size)
+		ds, err := s.store.Read(cmd.Key, storage.UsingOffset(v), storage.UsingPieceSize(cmd.Size))
+		if err != nil {
+			s.Logger.Error("read error", "msg", err.Error(), "piece-offset", v)
+		}
+		if _, err := ds.Read(buf); err != nil {
+			s.Logger.Error("read error2", "msg", err.Error(), "piece-offset", v)
+		}
+
+		resp := ReadResponse{
+			Key:    cmd.Key,
+			Offset: v,
+			Data:   buf,
+		}
+
+		if err := s.send(from, resp); err != nil {
+			s.Logger.Error("send error", "msg", err.Error())
+		}
+	}
+}
+
+func (s *FileServer) handleStoreUpdatedCommand(cmd *StoreUpdatedCommand) {
+	deltas, err := s.store.GetMissingDeltas(cmd.Key, cmd.Stat)
 	if err != nil {
+		s.Logger.Error("error wihle store update", "msg", err.Error())
+		return
+	}
+
+	if len(deltas) == 0 {
+		return
+	}
+
+	if err := s.retrieveChunks(cmd.Key, cmd.Stat.PieceSize, deltas...); err != nil {
+		s.Logger.Error("chunk retrieval error", "msg", err.Error())
+	}
+}
+
+func (s *FileServer) retrieveChunks(key string, size uint64, offsets ...uint64) error {
+	cmd := ReadCommand{
+		Key:     key,
+		Size:    size,
+		Offsets: offsets,
+	}
+
+	if err := s.broadcastCommand(cmd); err != nil {
 		return err
 	}
-	s.Logger.Info("chunk written", "offset", v.Offset, "len", len(v.Data), "disk", n)
-
 	return nil
 }
 
@@ -224,8 +313,8 @@ func (s *FileServer) registerTransportCallbacks() {
 		s.nodesMu.Lock()
 		defer s.nodesMu.Unlock()
 
-		s.peers[p.RemoteAddr().String()] = p
-		var addr string = p.RemoteAddr().String()
+		var addr = p.RemoteAddr().String()
+		s.peers[addr] = p
 		s.Logger.Info("peer connected", "inbound", p.Inbound(), "addr", addr, "peer-size", len(s.peers))
 	})
 
@@ -246,5 +335,7 @@ func (s *FileServer) registerTransportCallbacks() {
 
 func init() {
 	gob.Register(Message{})
-	gob.Register(StoreCommand{})
+	gob.Register(StoreUpdatedCommand{})
+	gob.Register(ReadCommand{})
+	gob.Register(ReadResponse{})
 }

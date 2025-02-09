@@ -23,11 +23,11 @@ type TcpPeer struct {
 	decoder encoding.Decoder
 }
 
-func (t *TcpPeer) SetEncoder(e encoding.Encoder) {
+func (t *TcpPeer) setEncoder(e encoding.Encoder) {
 	t.encoder = e
 }
 
-func (t *TcpPeer) SetDecoder(d encoding.Decoder) {
+func (t *TcpPeer) setDecoder(d encoding.Decoder) {
 	t.decoder = d
 }
 
@@ -86,10 +86,13 @@ func (t *TcpTransport) Dial(addr string) error {
 	}
 
 	peer := newTcpPeer(conn, true)
-	if err := t.ExecHandshake(peer); err != nil {
+	encoder, decoder, err := t.ExecHandshake(peer)
+	if err != nil {
 		defer peer.Close()
 		return err
 	}
+	peer.setEncoder(encoder)
+	peer.setDecoder(decoder)
 
 	if len(t.connectCallbacks) > 0 {
 		for _, callback := range t.connectCallbacks {
@@ -156,10 +159,13 @@ func (t *TcpTransport) startAcceptLoop() {
 		}
 		peer := newTcpPeer(conn, false)
 
-		if err := t.ExecHandshake(peer); err != nil {
+		encoder, decoder, err := t.ExecHandshake(peer)
+		if err != nil {
 			_ = peer.Close()
 			continue
 		}
+		peer.setEncoder(encoder)
+		peer.setDecoder(decoder)
 
 		go t.startPeerReadLoop(peer)
 	}
@@ -184,13 +190,17 @@ func (t *TcpTransport) startPeerReadLoop(peer *TcpPeer) {
 	for !t.isClosed {
 		buf.Reset()
 		if err := peer.decoder.DecodeStream(peer, buf); err != nil {
-			t.Logger.Error("tcp decode error", "msg", err.Error())
+			if !errors.Is(err, io.EOF) {
+				t.Logger.Error("tcp decode error", "msg", err.Error())
+			}
 			continue
 		}
-		if !t.isClosed {
-			rpc.Payload = buf.Bytes()
-			rpc.From = peer.RemoteAddr().String()
-			t.rpcch <- rpc
+
+		rpc.Payload = buf.Bytes()
+		if len(rpc.Payload) == 0 {
+			continue
 		}
+		rpc.From = peer.RemoteAddr().String()
+		t.rpcch <- rpc
 	}
 }

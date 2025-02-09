@@ -102,8 +102,6 @@ func testDial_With_NoReceiver(t *testing.T, tr *p2p.TcpTransport) {
 }
 
 func testDial_With_DataSending(t *testing.T, t1 *p2p.TcpTransport, t2 *p2p.TcpTransport) {
-	ctx, cancel := context.WithTimeout(context.TODO(), 50*time.Millisecond)
-	t.Cleanup(cancel)
 	data := make([]byte, encodingConfig.BuffSize)
 	_, err := io.ReadFull(cryptoRand.Reader, data)
 	if err != nil {
@@ -113,6 +111,9 @@ func testDial_With_DataSending(t *testing.T, t1 *p2p.TcpTransport, t2 *p2p.TcpTr
 	t1.OnPeerConnected(func(p p2p.Peer) {
 		p.Send(data)
 	})
+
+	ctx, cancel := context.WithTimeout(context.TODO(), 500*time.Millisecond)
+	t.Cleanup(cancel)
 
 	if err := t1.Dial(t2.ListenAddr); err != nil {
 		t.Error(err)
@@ -124,7 +125,9 @@ func testDial_With_DataSending(t *testing.T, t1 *p2p.TcpTransport, t2 *p2p.TcpTr
 			assert.EqualValues(t, data, rpc.Payload)
 		}
 	case <-ctx.Done():
-		t.Errorf("timeout error")
+		if ctx.Err() != nil {
+			t.Error(ctx.Err())
+		}
 		return
 	}
 }

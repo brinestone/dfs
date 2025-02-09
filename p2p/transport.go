@@ -17,7 +17,6 @@ import (
 
 type Rpc struct {
 	Payload []byte
-	Stream  bool
 	From    string
 }
 
@@ -25,8 +24,6 @@ type Peer interface {
 	net.Conn
 	Inbound() bool
 	Send([]byte) error
-	SetEncoder(encoding.Encoder)
-	SetDecoder(encoding.Decoder)
 }
 
 type Transport interface {
@@ -40,40 +37,37 @@ type Transport interface {
 
 var ErrHandshakeTimeout = errors.New("handshake timeout")
 
-type HandshakeFunc func(Peer) error
+type HandshakeFunc func(Peer) (encoding.Encoder, encoding.Decoder, error)
 
 func NoopHandshaker(config encoding.EncodingConfig) HandshakeFunc {
-	return func(p Peer) error {
-		p.SetEncoder(encoding.NewPlainEncoderDecoder(config))
-		p.SetDecoder(encoding.NewPlainEncoderDecoder(config))
-		return nil
+	return func(p Peer) (encoding.Encoder, encoding.Decoder, error) {
+		return encoding.NewPlainEncoderDecoder(config), encoding.NewPlainEncoderDecoder(config), nil
 	}
 }
 
 // Performs exchanging of public keys between peers and sets the encoder for the peer.
 func KeyExchangeHandShaker(l *slog.Logger, timeout time.Duration, cnf encoding.EncodingConfig) HandshakeFunc {
-	var sendPublicKey = func(p Peer, key *ecdh.PublicKey) error {
+	var sendPublicKey = func(ctx context.Context, p Peer, key *ecdh.PublicKey) error {
 
 		kb, err := x509.MarshalPKIXPublicKey(key)
 		if err != nil {
 			return err
 		}
 
-		if _, err = p.Write(kb); err != nil {
-			return err
+		_, err = p.Write(kb)
+		if errors.Is(err, net.ErrClosed) || (ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+			return ErrHandshakeTimeout
 		}
 		return nil
 	}
 
 	var readPeerPublicKey = func(ctx context.Context, p Peer) (*ecdh.PublicKey, error) {
-		_ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
 
 		var publicKey *ecdh.PublicKey
 
 		for {
-			if _ctx.Err() != nil && errors.Is(_ctx.Err(), context.DeadlineExceeded) {
-				return nil, _ctx.Err()
+			if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, ErrHandshakeTimeout
 			}
 
 			key := make([]byte, 1024)
@@ -100,39 +94,39 @@ func KeyExchangeHandShaker(l *slog.Logger, timeout time.Duration, cnf encoding.E
 		return publicKey, nil
 	}
 
-	return func(p Peer) error {
+	return func(p Peer) (encoding.Encoder, encoding.Decoder, error) {
+		ctx, cancel := context.WithTimeout(context.TODO(), timeout)
+		defer cancel()
+
 		private, localPublic, err := crypt.KeyGen()
 		var remotePublic *ecdh.PublicKey
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		if p.Inbound() {
 			if remotePublic, err = readPeerPublicKey(context.TODO(), p); err != nil {
-				return err
+				return nil, nil, err
 			}
-			if err := sendPublicKey(p, localPublic); err != nil {
-				return err
+			if err := sendPublicKey(ctx, p, localPublic); err != nil {
+				return nil, nil, err
 			}
 		} else {
-			if err := sendPublicKey(p, localPublic); err != nil {
-				return err
+			if err := sendPublicKey(ctx, p, localPublic); err != nil {
+				return nil, nil, err
 			}
 			if remotePublic, err = readPeerPublicKey(context.TODO(), p); err != nil {
-				return err
+				return nil, nil, err
 			}
 		}
 
 		secret, err := crypt.SecGen(private, remotePublic)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		ec := encoding.NewSecureEncoderDecoder(secret, cnf)
 
-		p.SetEncoder(ec)
-		p.SetDecoder(ec)
-
-		return nil
+		return ec, ec, nil
 	}
 }
