@@ -25,4 +25,4 @@ type Transport interface {
 
 type HandshakeFunc func(Peer) error
 
-var NoopHandshaker HandshakeFunc = func(p Peer) error { return nil }
+var NoopHandshake HandshakeFunc = func(p Peer) error { return nil }

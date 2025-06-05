@@ -1,4 +1,4 @@
-// The enc package contains all functions and types concerning encryption/decryption operations.
+// Package encdec contains all functions and types concerning encryption/decryption operations.
 package encdec
 
 import (
@@ -14,7 +14,7 @@ type KeyPair struct {
 	Public  []byte
 }
 
-// Generates asymmetric key-pair
+// NewKeyPair generates asymmetric key-pair
 func NewKeyPair() (*KeyPair, error) {
 	pvk, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -44,7 +44,7 @@ func NewKeyPair() (*KeyPair, error) {
 	}, nil
 }
 
-// Encrypts the data using the specified public key
+// Encrypt Encrypts the data using the specified public key
 func Encrypt(keypath string, plain []byte) ([]byte, error) {
 	var ciphertext []byte
 
@@ -53,8 +53,8 @@ func Encrypt(keypath string, plain []byte) ([]byte, error) {
 		return ciphertext, err
 	}
 
-	keyblock, _ := pem.Decode(pkPem)
-	pk, err := x509.ParsePKIXPublicKey(keyblock.Bytes)
+	keyBlock, _ := pem.Decode(pkPem)
+	pk, err := x509.ParsePKIXPublicKey(keyBlock.Bytes)
 	if err != nil {
 		return ciphertext, err
 	}

@@ -3,121 +3,123 @@ package main
 import (
 	"context"
 	"crypto/md5"
-	"embed"
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/google/uuid"
 	"log/slog"
-	"math"
-	"math/rand"
-	"net"
 	"os"
+	"os/signal"
 	"path"
-	"time"
+	"syscall"
 
+	"github.com/brinestone/dfs/api"
+	"github.com/brinestone/dfs/fs"
 	"github.com/brinestone/dfs/p2p"
-	"github.com/brinestone/dfs/server"
 	"github.com/brinestone/dfs/storage"
 )
 
-var bufferSize = flag.Int64("bs", 4096, "Buffer Size")
-var serverCount = flag.Int("cnt", 2, "Number of servers to spawn")
-var logger = slog.Default().WithGroup("DFS")
-var storageRoot = flag.String("root", path.Join(os.Getenv("HOME"), ".dfs"), "Filesystem path to be used as root.")
+var (
+	storageRoot = flag.String("root", path.Join(homeDir, ".dfs"), "Filesystem path to be used as root.")
+	bufferSize  = flag.Int64("bs", 4096, "Buffer Size")
+	homeDir, _  = os.UserHomeDir()
+	logger      = slog.Default().WithGroup("DFS")
+	ctx         = context.Background()
+)
 
-func makeServer(ctx context.Context, listenAddr string, id string) (*server.FileServer, context.CancelFunc) {
+func makeServer(ctx context.Context, listenAddr string, id string) (*fs.FileServer, context.CancelFunc) {
 	tcpTransportConfig := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
-		Handshaker: p2p.NoopHandshaker,
+		Handshake:  p2p.NoopHandshake,
 		Decoder: p2p.DefaultDecoder{
 			EncodingConfig: p2p.EncodingConfig{
 				BufferSize: *bufferSize,
 			},
 		},
-		Logger: logger,
-		// TODO: onPeer func
+		Logger: logger.WithGroup("FS/TCP"),
 	}
 	tcpTransport := p2p.NewTcpTransport(tcpTransportConfig)
-	serverGroup := fmt.Sprintf("server-%s", id)
+	serverGroup := fmt.Sprintf("fs-%s", id)
 	hash := md5.Sum([]byte(serverGroup))
 	root := path.Join(*storageRoot, hex.EncodeToString(hash[:]))
 
 	c, cancel := context.WithCancel(ctx)
 
-	serverConfig := server.FileServerConfig{
+	serverConfig := fs.FileServerConfig{
 		ListenAddr:      listenAddr,
 		StorageRoot:     root,
 		KeyTransformer:  storage.CASKeyTransformer(root),
 		Transport:       tcpTransport,
 		Id:              id,
 		Context:         c,
-		Logger:          logger.WithGroup(serverGroup),
+		Logger:          logger.WithGroup("FS/Server"),
 		StreamChunkSize: *bufferSize,
 	}
 
-	s := server.NewFileServer(serverConfig)
+	s := fs.NewFileServer(serverConfig)
 	return s, cancel
 }
 
-func spawnServers(ctx context.Context, cb func(*server.FileServer)) {
-	logger.Debug("Spawning servers", "server-count", *serverCount)
-	var addrs = make([]string, *serverCount)
-	var c int
+func startFileServer() *fs.FileServer {
+	serverId, err := os.Hostname()
+	if err != nil {
+		serverId = uuid.NewString() // todo: rethink this
+	}
+	server, cancel := makeServer(ctx, ":5060", serverId)
 
-	// Find available port
-	for c < *serverCount {
-		t := int(math.Max(1025, float64(rand.Intn(65_536))))
-
-		addr := fmt.Sprintf("0.0.0.0:%d", t)
-		if l, err := net.Listen("tcp", addr); err == nil {
-			addrs[c] = addr
-			l.Close()
-			c++
-			continue
+	go func() {
+		defer cancel()
+		if err = server.Start(); err != nil {
+			logger.Error("error while starting file server", "reason", err.Error())
 		}
-	}
+	}()
 
-	for i, addr := range addrs {
-		s, cancel := makeServer(ctx, addr, fmt.Sprintf("%d", i+1))
-		peers := addrs[:i]
-		go func() {
-			defer cancel()
-			if err := s.Start(peers...); err != nil {
-				logger.Error(err.Error())
-			}
-		}()
-		// if i == 0 {
-		go cb(s)
-		// }
-	}
-
+	return server
 }
 
-//go:embed lorem.txt
-var sampleData embed.FS
-
-func main() {
-	flag.Parse()
-	ctx := context.Background()
-
-	spawnServers(ctx, func(fs *server.FileServer) {
-		time.Sleep(time.Second * 3)
-		handle, err := sampleData.Open("lorem.txt")
-		if err != nil {
-			panic(err)
-		}
-
-		stat, err := handle.Stat()
-		if err != nil {
-			panic(err)
-		}
-
-		defer handle.Close()
-		err = fs.StoreData(fmt.Sprintf("server_%s", fs.Id), stat.Size(), handle)
-		if err != nil {
-			logger.Error("store error", "msg", err.Error())
-		}
+func startApi(addr string) *api.Server {
+	apiServer := api.NewServer(api.Config{
+		Addr:   addr,
+		Ctx:    ctx,
+		Logger: logger.WithGroup("API"),
 	})
 
-	select {}
+	go func() {
+		err := apiServer.Start()
+		if err != nil {
+			defer apiServer.Stop()
+			logger.Error("error while starting API", err.Error())
+			return
+		}
+	}()
+
+	return apiServer
+}
+
+func main() {
+	flag.Parsed()
+	ctx = context.Background()
+	apiServer := startApi(":8000")
+	fileServer := startFileServer()
+
+	apiServer.Config.FileServer = fileServer
+	endCh := make(chan os.Signal, 1)
+	signal.Notify(endCh, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case <-ctx.Done():
+		apiServer.Stop()
+		return
+	case <-endCh:
+		logger.Info("Shutting down")
+		err := fileServer.Shutdown()
+		if err != nil {
+			logger.Error("error while stopping File Server", "cause", err.Error())
+		}
+		err = apiServer.Stop()
+		if err != nil {
+			logger.Error("error while stopping API", "cause", err.Error())
+		}
+		return
+	}
 }

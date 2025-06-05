@@ -1,4 +1,4 @@
-package server
+package fs
 
 import (
 	"bytes"
@@ -53,16 +53,16 @@ type Message struct {
 }
 
 // Writes the data to the disk and also broadcasts it to other nodes and returns a channel which reports the status of the storing operation.
-func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
+func (s *FileServer) StoreData(key string, size int64, in io.Reader) error {
 	var read int64 = 0
 
 	for read < size {
-		var limitReader = io.LimitReader(in, int64(fs.StreamChunkSize))
+		var limitReader = io.LimitReader(in, int64(s.StreamChunkSize))
 
 		var broadcastBuffer = new(bytes.Buffer)
 		var toDiskReader = io.TeeReader(limitReader, broadcastBuffer)
 
-		_, err := fs.store.Write(read, key, toDiskReader)
+		_, err := s.store.Write(read, key, toDiskReader)
 		if err != nil {
 			return err
 		}
@@ -74,7 +74,7 @@ func (fs *FileServer) StoreData(key string, size int64, in io.Reader) error {
 			Data:   broadcastBuffer.Bytes(),
 		}
 
-		if err := fs.broadcastCommand(&cmd); err != nil {
+		if err := s.broadcastCommand(&cmd); err != nil {
 			return err
 		}
 
@@ -107,13 +107,13 @@ func NewFileServer(config FileServerConfig) *FileServer {
 	return server
 }
 
-func (s *FileServer) Start(addrs ...string) error {
-	s.Logger.Info("Server started", "address", s.ListenAddr)
+func (s *FileServer) Start(addresses ...string) error {
 	if err := s.Transport.ListenAndAccept(); err != nil {
 		return err
 	}
+	s.Logger.Info("File Server started successfully", "addr", s.ListenAddr)
 
-	if err := s.HostsAvailable(addrs...); err != nil {
+	if err := s.HostsAvailable(addresses...); err != nil {
 		s.Logger.Error(err.Error())
 	}
 	s.loop()
@@ -132,8 +132,8 @@ func (s *FileServer) Shutdown() error {
 	return nil
 }
 
-func (fs *FileServer) broadcastCommand(p any) error {
-	if len(fs.peers) == 0 {
+func (s *FileServer) broadcastCommand(p any) error {
+	if len(s.peers) == 0 {
 		return nil
 	}
 
@@ -148,7 +148,7 @@ func (fs *FileServer) broadcastCommand(p any) error {
 	}
 	data := buf.Bytes()
 
-	for _, peer := range fs.peers {
+	for _, peer := range s.peers {
 		if err := peer.Send(data); err != nil {
 			return err
 		}
@@ -158,7 +158,10 @@ func (fs *FileServer) broadcastCommand(p any) error {
 
 func (s *FileServer) loop() {
 	defer func() {
-		s.Transport.Close()
+		err := s.Transport.Close()
+		if err != nil {
+			return
+		}
 	}()
 
 	for {
@@ -205,7 +208,7 @@ func (s *FileServer) handleStoreCommand(v *StoreCommand) error {
 	return nil
 }
 
-// Connects to remote hosts
+// HostsAvailable Connects to remote hosts
 func (s *FileServer) HostsAvailable(nodes ...string) error {
 	for _, addr := range nodes {
 		if len(addr) == 0 {
@@ -238,7 +241,7 @@ func (s *FileServer) registerTransportCallbacks() {
 
 		delete(s.peers, p.RemoteAddr().String())
 
-		var addr string = p.LocalAddr().String()
+		var addr = p.LocalAddr().String()
 
 		if p.Inbound() {
 			addr = p.RemoteAddr().String()

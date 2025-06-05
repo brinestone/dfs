@@ -35,7 +35,7 @@ func newTcpPeer(conn net.Conn, outbound bool) *TcpPeer {
 
 type TcpTransportConfig struct {
 	ListenAddr string
-	Handshaker HandshakeFunc
+	Handshake  HandshakeFunc
 	Logger     *slog.Logger
 	Decoder    Decoder
 }
@@ -46,16 +46,21 @@ type TcpTransport struct {
 	rpcch               chan Rpc
 	connectCallbacks    []func(Peer)
 	disconnectCallbacks []func(Peer)
-
-	muIsClosed sync.RWMutex
-	isClosed   bool
+	muIsClosed          sync.RWMutex
+	isClosed            bool
 }
 
 func (t *TcpTransport) OnPeerConnected(f func(Peer)) {
+	if f == nil {
+		return
+	}
 	t.connectCallbacks = append(t.connectCallbacks, f)
 }
 
 func (t *TcpTransport) OnPeerDisconnected(f func(Peer)) {
+	if f == nil {
+		return
+	}
 	t.disconnectCallbacks = append(t.disconnectCallbacks, f)
 }
 
@@ -66,7 +71,7 @@ func (t *TcpTransport) Dial(addr string) error {
 	}
 
 	peer := newTcpPeer(conn, true)
-	if err := t.Handshaker(peer); err != nil {
+	if err := t.Handshake(peer); err != nil {
 		defer peer.Close()
 		return err
 	}
@@ -135,7 +140,7 @@ func (t *TcpTransport) startAcceptLoop() {
 		}
 		peer := newTcpPeer(conn, false)
 
-		if err := t.Handshaker(peer); err != nil {
+		if err := t.Handshake(peer); err != nil {
 			t.Logger.Error(err.Error())
 			_ = peer.Close()
 			continue

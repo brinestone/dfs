@@ -64,8 +64,7 @@ func CASKeyTransformer(root string) KeyTransformer {
 type StoreConfig struct {
 	TransformKey KeyTransformer
 	Logger       *slog.Logger
-	// Root directory of the store
-	Root string
+	Root         string
 }
 
 type Store struct {
