@@ -16,8 +16,6 @@ import (
 
 type FileServerConfig struct {
 	ListenAddr      string
-	KeyTransformer  storage.KeyTransformer
-	StorageRoot     string
 	Transport       p2p.Transport
 	Context         context.Context
 	Logger          *slog.Logger
@@ -49,7 +47,7 @@ type StoreCommand struct {
 
 type Message struct {
 	Timestamp time.Time
-	Payload   interface{}
+	Payload   any
 }
 
 // Writes the data to the disk and also broadcasts it to other nodes and returns a channel which reports the status of the storing operation.
@@ -83,18 +81,13 @@ func (s *FileServer) StoreData(key string, size int64, in io.Reader) error {
 	return nil
 }
 
-func NewFileServer(config FileServerConfig) *FileServer {
+func NewFileServer(config FileServerConfig, store *storage.Store) *FileServer {
 	var server *FileServer
 
 	ctx, cancel := context.WithCancel(config.Context)
-	storageConfig := storage.StoreConfig{
-		TransformKey: config.KeyTransformer,
-		Root:         config.StorageRoot,
-		Logger:       config.Logger,
-	}
 
 	server = &FileServer{
-		store:            storage.NewStore(storageConfig),
+		store:            store,
 		FileServerConfig: config,
 		shutdownFunc:     cancel,
 		ctx:              ctx,

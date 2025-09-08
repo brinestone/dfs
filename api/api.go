@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"github.com/brinestone/dfs/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
+
+	"github.com/brinestone/dfs/fs"
+	"github.com/brinestone/dfs/storage"
 )
 
 type Config struct {
@@ -15,43 +18,37 @@ type Config struct {
 	Ctx        context.Context
 	Logger     *slog.Logger
 	FileServer *fs.FileServer
+	Store      *storage.Store
+	BasePath   string
+	Verbose    bool
 }
 
-type Server struct {
+type Api struct {
 	Config
 	mux      *http.ServeMux
 	server   *http.Server
 	listener net.Listener
 }
 
-func (s *Server) Start() (err error) {
-	l, err := net.Listen("tcp", s.Addr)
+func (s *Api) Start() (err error) {
+	s.listener, err = net.Listen("tcp", s.Addr)
 	if err != nil {
 		return
 	}
 
-	s.listener = l
-	s.server = &http.Server{
-		Handler:      s.mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  15 * time.Second,
-	}
-
-	s.server.RegisterOnShutdown(func() {
-		s.Logger.Info("Server is shutting down", "addr", s.Addr)
-	})
-	s.Logger.Info("Server started successfully", "addr", s.Addr)
-	err = s.server.Serve(l)
+	s.server = &http.Server{Handler: s.mux}
+	s.Logger.Info("Api started successfully", "addr", s.Addr)
+	err = s.server.Serve(s.listener)
 	return
 }
 
-func (s *Server) Stop() error {
-	return s.server.Shutdown(s.Ctx)
+func (s *Api) Stop() error {
+	s.server.Shutdown(s.Ctx)
+	return nil
 }
 
-func NewServer(c Config) (server *Server) {
-	server = &Server{
+func NewApi(c Config) (server *Api) {
+	server = &Api{
 		Config: c,
 		mux:    http.NewServeMux(),
 	}
@@ -62,19 +59,50 @@ func NewServer(c Config) (server *Server) {
 	return
 }
 
-func (s *Server) setupHandlers() {
+func (s *Api) makeApiPath(path string) string {
+	pathname, err := url.JoinPath(s.BasePath, path)
+	if err != nil {
+		panic(err)
+	}
+	return pathname
+}
+
+func (s *Api) makeApiPathWithBase(path string, base string) string {
+	pathname, err := url.JoinPath(s.BasePath, base, path)
+	if err != nil {
+		panic(err)
+	}
+	return pathname
+}
+
+func (s *Api) registerHandler(path string, handler http.Handler) {
+	// pathname := s.makeApiPath(path)
+	s.mux.Handle(path, handler)
+	if s.Verbose {
+		s.Logger.Debug("registered handler", "path", path)
+	}
+}
+
+func (s *Api) registerLoggedHandler(path string, handler http.Handler) {
 	// Logger middleware
 	logMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			s.Logger.Info("Request received", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+			start := time.Now()
 			next.ServeHTTP(w, r)
+			timeTaken := time.Since(start)
+			s.Logger.Info("Request received", "duration", timeTaken, "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		})
 	}
+	// s.mux.Handle(path, logMiddleware(handler))
+	s.registerHandler(path, logMiddleware(handler))
+}
 
-	s.mux.Handle(
-		"/",
-		logMiddleware(http.HandlerFunc(homeHandler)),
+func (s *Api) setupHandlers() {
+	s.registerLoggedHandler(
+		s.makeApiPath("/health"),
+		http.HandlerFunc(homeHandler),
 	)
+	s.setupStorageEndpointHandlers()
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
