@@ -10,8 +10,18 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"runtime"
 	"strings"
+
+	"github.com/shirou/gopsutil/v3/disk"
 )
+
+type StoreStats struct {
+	TotalSpace uint64 `json:"totalSpace"`
+	TotalUsed  uint64 `json:"totalUsed"`
+	StoreSize  uint64 `json:"storeSize"`
+	Root       string `json:"rootPath"`
+}
 
 type PathKey struct {
 	Pathname string
@@ -87,6 +97,37 @@ func NewStore(config StoreConfig) *Store {
 	return &Store{
 		StoreConfig: config,
 	}
+}
+
+func getRootDiskStats(rootPath string) (usage *disk.UsageStat, err error) {
+	usage, err = disk.Usage(rootPath)
+	return
+}
+
+func (s *Store) GetStats() StoreStats {
+	var rootPath string
+	if runtime.GOOS == "windows" {
+		rootPath = "C:"
+	} else {
+		rootPath = "/"
+	}
+
+	stats, err := getRootDiskStats(rootPath)
+	if err != nil {
+		panic(err)
+	}
+	ans := StoreStats{
+		TotalSpace: stats.Total,
+		TotalUsed:  stats.Free,
+		StoreSize:  0,
+		Root:       s.Root,
+	}
+	stats, _ = getRootDiskStats(s.Root)
+	if stats != nil {
+		ans.StoreSize = stats.Used
+	}
+
+	return ans
 }
 
 func (s *Store) Clean() error {

@@ -8,7 +8,13 @@ require (
 	google.golang.org/grpc v1.73.0
 )
 
-require gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+require (
+	github.com/go-ole/go-ole v1.2.6 // indirect
+	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
+	github.com/shirou/gopsutil/v3 v3.24.5 // indirect
+	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+)
 
 require (
 	github.com/akamensky/argparse v1.4.0
