@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net"
@@ -38,6 +39,7 @@ type TcpTransportConfig struct {
 	Handshake  HandshakeFunc
 	Logger     *slog.Logger
 	Decoder    Decoder
+	Ctx        context.Context
 }
 
 type TcpTransport struct {
@@ -111,22 +113,27 @@ func (t *TcpTransport) ListenAndAccept() error {
 func (t *TcpTransport) Close() error {
 	var ans error
 	t.muIsClosed.Lock()
-
+	defer t.muIsClosed.Unlock()
 	t.isClosed = true
-	t.muIsClosed.Unlock()
-	close(t.rpcch)
 	if t.listener != nil {
 		ans = t.listener.Close()
 	}
 	return ans
 }
 
-func NewTcpTransport(config TcpTransportConfig) *TcpTransport {
-	return &TcpTransport{
+func NewTcpTransport(ctx context.Context, config TcpTransportConfig) *TcpTransport {
+	transport := &TcpTransport{
 		TcpTransportConfig: config,
 		rpcch:              make(chan Rpc),
 		isClosed:           true,
 	}
+	go func() {
+		<-ctx.Done()
+		if !transport.isClosed {
+			transport.Close()
+		}
+	}()
+	return transport
 }
 
 func (t *TcpTransport) startAcceptLoop() {

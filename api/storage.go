@@ -21,6 +21,15 @@ func getStorageStatsHandler(api *Api, store *storage.Store) http.Handler {
 	})
 }
 
+func (api *Api) storeEventStreamHandlers() {
+	if api.eb == nil {
+		return
+	}
+	subscriberch := api.eb.Subscribe(api.ctx, storage.EvAllEvents)
+	api.registerHandler(api.makeApiPathWithBase("live", storageUrlPath), sseHandler(subscriberch, api.Logger))
+}
+
 func (api *Api) setupStorageEndpointHandlers() {
-	api.registerLoggedHandler(api.makeApiPathWithBase("stats", storageUrlPath), getStorageStatsHandler(api, api.Store))
+	api.registerLoggedHandler(api.makeApiPathWithBase("stats", storageUrlPath), getStorageStatsHandler(api, api.store))
+	api.storeEventStreamHandlers()
 }

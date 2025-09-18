@@ -1,7 +1,8 @@
 build:
+	@if exist "..\bin\app.exe" del "..\bin\app.exe"
 	@go build -C cmd -o ..\bin\app.exe
 build-nix:
-	@rm ../bin/app
+	@rm -f ../bin/app
 	@go build -C cmd -o ../bin/app
 run:
 	@make build

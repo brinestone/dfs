@@ -3,24 +3,23 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/brinestone/dfs/events"
 	"github.com/brinestone/dfs/fs"
 	"github.com/brinestone/dfs/storage"
 )
 
 type Config struct {
-	Addr       string
-	Ctx        context.Context
-	Logger     *slog.Logger
-	FileServer *fs.FileServer
-	Store      *storage.Store
-	BasePath   string
-	Verbose    bool
+	Addr     string
+	Logger   *slog.Logger
+	BasePath string
+	Verbose  bool
 }
 
 type Api struct {
@@ -28,10 +27,18 @@ type Api struct {
 	mux      *http.ServeMux
 	server   *http.Server
 	listener net.Listener
+	eb       *events.EventBus
+	store    *storage.Store
+	fs       *fs.FileServer
+	ctx      context.Context
 }
 
 func (s *Api) Start() (err error) {
 	s.listener, err = net.Listen("tcp", s.Addr)
+	go func() {
+		<-s.ctx.Done()
+		s.stop()
+	}()
 	if err != nil {
 		return
 	}
@@ -42,15 +49,18 @@ func (s *Api) Start() (err error) {
 	return
 }
 
-func (s *Api) Stop() error {
-	s.server.Shutdown(s.Ctx)
-	return nil
+func (s *Api) stop() error {
+	return errors.Join(s.server.Shutdown(s.ctx), s.listener.Close())
 }
 
-func NewApi(c Config) (server *Api) {
+func NewApi(ctx context.Context, f *fs.FileServer, s *storage.Store, eb *events.EventBus, c Config) (server *Api) {
 	server = &Api{
 		Config: c,
 		mux:    http.NewServeMux(),
+		fs:     f,
+		ctx:    ctx,
+		store:  s,
+		eb:     eb,
 	}
 	if server.Logger == nil {
 		server.Logger = slog.Default()
@@ -90,7 +100,7 @@ func (s *Api) registerLoggedHandler(path string, handler http.Handler) {
 			start := time.Now()
 			next.ServeHTTP(w, r)
 			timeTaken := time.Since(start)
-			s.Logger.Info("Request received", "duration", timeTaken, "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+			s.Logger.Info("request received", "duration", timeTaken, "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		})
 	}
 	// s.mux.Handle(path, logMiddleware(handler))

@@ -11,12 +11,14 @@ import (
 	"path"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/akamensky/argparse"
 
 	"github.com/google/uuid"
 
 	"github.com/brinestone/dfs/api"
+	"github.com/brinestone/dfs/events"
 	"github.com/brinestone/dfs/fs"
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/storage"
@@ -28,8 +30,11 @@ var (
 	bufferSize  *int
 	homeDir, _  = os.UserHomeDir()
 	logger      *slog.Logger
-	ctx         = context.Background()
 )
+
+func makeEventBus(ctx context.Context) *events.EventBus {
+	return events.NewBus(ctx)
+}
 
 func makeStore(root string) (store *storage.Store) {
 	storageConfig := storage.StoreConfig{
@@ -42,7 +47,7 @@ func makeStore(root string) (store *storage.Store) {
 	return
 }
 
-func makeServer(ctx context.Context, listenAddr string, id string, store *storage.Store) (*fs.FileServer, context.CancelFunc) {
+func makeServer(ctx context.Context, listenAddr string, id string, store *storage.Store, eb *events.EventBus) *fs.FileServer {
 	fsLogger := logger.WithGroup("fs")
 	tcpTransportConfig := p2p.TcpTransportConfig{
 		ListenAddr: listenAddr,
@@ -54,28 +59,24 @@ func makeServer(ctx context.Context, listenAddr string, id string, store *storag
 		},
 		Logger: fsLogger.WithGroup("tcp"),
 	}
-	tcpTransport := p2p.NewTcpTransport(tcpTransportConfig)
-
-	c, cancel := context.WithCancel(ctx)
+	tcpTransport := p2p.NewTcpTransport(ctx, tcpTransportConfig)
 
 	serverConfig := fs.FileServerConfig{
 		ListenAddr:      listenAddr,
 		Transport:       tcpTransport,
 		Id:              id,
-		Context:         c,
 		Logger:          fsLogger.WithGroup("server"),
 		StreamChunkSize: int64(*bufferSize),
 	}
 
-	s := fs.NewFileServer(serverConfig, store)
-	return s, cancel
+	s := fs.NewFileServer(ctx, serverConfig, store, eb)
+	return s
 }
 
-func startFileServer(serverId string, store *storage.Store) *fs.FileServer {
-	server, cancel := makeServer(ctx, ":5060", serverId, store)
+func startFileServer(ctx context.Context, serverId string, store *storage.Store, eb *events.EventBus) *fs.FileServer {
+	server := makeServer(ctx, ":5060", serverId, store, eb)
 
 	go func() {
-		defer cancel()
 		if err := server.Start(); err != nil {
 			logger.Error("error while starting file server", "reason", err.Error())
 		}
@@ -84,24 +85,17 @@ func startFileServer(serverId string, store *storage.Store) *fs.FileServer {
 	return server
 }
 
-func startApi(addr string, store *storage.Store, f *fs.FileServer) *api.Api {
-	apiServer := api.NewApi(api.Config{
-		Addr:       addr,
-		BasePath:   "/api",
-		Verbose:    *verbose,
-		Ctx:        ctx,
-		Logger:     logger.WithGroup("api"),
-		Store:      store,
-		FileServer: f,
+func startApi(ctx context.Context, addr string, store *storage.Store, f *fs.FileServer, eb *events.EventBus) *api.Api {
+	apiServer := api.NewApi(ctx, f, store, eb, api.Config{
+		Addr:     addr,
+		BasePath: "/api",
+		Verbose:  *verbose,
+		Logger:   logger.WithGroup("api"),
 	})
 
 	go func() {
 		err := apiServer.Start()
-		if err != nil {
-			defer apiServer.Stop()
-			logger.Error("error while starting API", "err", err.Error())
-			return
-		}
+		panic(err)
 	}()
 
 	return apiServer
@@ -126,6 +120,7 @@ func setupLogger() {
 }
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
 	parseArgs()
 	setupLogger()
 	serverId, err := os.Hostname()
@@ -140,28 +135,29 @@ func main() {
 		panic(err)
 	}
 
+	eb := makeEventBus(ctx)
 	store := makeStore(root)
-	fileServer := startFileServer(serverId, store)
-	apiServer := startApi(":8000", store, fileServer)
+	fileServer := startFileServer(ctx, serverId, store, eb)
+	startApi(ctx, ":8000", store, fileServer, eb)
 
-	apiServer.Config.FileServer = fileServer
 	endCh := make(chan os.Signal, 1)
 	signal.Notify(endCh, os.Interrupt, syscall.SIGTERM)
-
+	ticker := time.NewTicker(5 * time.Second)
+	for now := range ticker.C {
+		eb.Publish(events.Event{
+			Target: storage.EvAllEvents,
+			Id:     now.String(),
+			Data: map[string]any{
+				"foo": "bar",
+			},
+		})
+	}
 	select {
 	case <-ctx.Done():
-		apiServer.Stop()
+		ticker.Stop()
+		logger.Info("Shutting down")
 		return
 	case <-endCh:
-		logger.Info("Shutting down")
-		err := fileServer.Shutdown()
-		if err != nil {
-			logger.Error("error while stopping File Api", "cause", err.Error())
-		}
-		err = apiServer.Stop()
-		if err != nil {
-			logger.Error("error while stopping API", "cause", err.Error())
-		}
-		return
+		cancel()
 	}
 }

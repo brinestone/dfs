@@ -13,7 +13,13 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/brinestone/dfs/events"
 	"github.com/shirou/gopsutil/v3/disk"
+)
+
+const (
+	EvAllEvents   events.EventTarget = "storage.*"
+	EvTargetClean events.EventTarget = "storage.clean"
 )
 
 type StoreStats struct {
@@ -55,7 +61,7 @@ func CASKeyTransformer(root string) KeyTransformer {
 
 		segments := make([]string, sliceLen)
 
-		for i := 0; i < sliceLen; i++ {
+		for i := range sliceLen {
 			from, to := i*blockSize, (i*blockSize)+blockSize
 			segments[i] = digestStr[from:to]
 		}
@@ -75,6 +81,7 @@ type StoreConfig struct {
 	TransformKey KeyTransformer
 	Logger       *slog.Logger
 	Root         string
+	Dispatcher   *events.EventBus
 }
 
 type Store struct {

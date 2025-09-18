@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brinestone/dfs/events"
 	"github.com/brinestone/dfs/p2p"
 	"github.com/brinestone/dfs/storage"
 )
@@ -17,7 +18,6 @@ import (
 type FileServerConfig struct {
 	ListenAddr      string
 	Transport       p2p.Transport
-	Context         context.Context
 	Logger          *slog.Logger
 	Id              string
 	StreamChunkSize int64
@@ -27,10 +27,9 @@ type FileServer struct {
 	FileServerConfig
 	nodesMu *sync.Mutex
 	peers   map[string]p2p.Peer
-
-	store        *storage.Store
-	shutdownFunc func()
-	ctx          context.Context
+	eb      *events.EventBus
+	store   *storage.Store
+	ctx     context.Context
 }
 
 type ReadCommand struct {
@@ -81,21 +80,21 @@ func (s *FileServer) StoreData(key string, size int64, in io.Reader) error {
 	return nil
 }
 
-func NewFileServer(config FileServerConfig, store *storage.Store) *FileServer {
-	var server *FileServer
-
-	ctx, cancel := context.WithCancel(config.Context)
-
-	server = &FileServer{
+func NewFileServer(ctx context.Context, config FileServerConfig, store *storage.Store, eb *events.EventBus) *FileServer {
+	server := &FileServer{
 		store:            store,
+		eb:               eb,
 		FileServerConfig: config,
-		shutdownFunc:     cancel,
 		ctx:              ctx,
 		peers:            make(map[string]p2p.Peer),
 		nodesMu:          new(sync.Mutex),
 	}
 
 	server.registerTransportCallbacks()
+	go func() {
+		<-ctx.Done()
+		server.shutdown()
+	}()
 
 	return server
 }
@@ -114,9 +113,8 @@ func (s *FileServer) Start(addresses ...string) error {
 	return nil
 }
 
-func (s *FileServer) Shutdown() error {
+func (s *FileServer) shutdown() error {
 	s.Logger.Info("Server shutting down...")
-	defer s.shutdownFunc()
 	defer s.Logger.Info("Server shutdown successful ✅")
 
 	if err := s.Transport.Close(); err != nil {
